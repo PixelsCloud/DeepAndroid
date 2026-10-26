@@ -1,4 +1,5 @@
 import { mapPoint, type Geometry, type InputCommand, type PhoneKey, type Point } from './input.js'
+import { notify } from './browser-toast.js'
 
 interface Options { socket(): WebSocket | undefined; dimensions(): { width: number; height: number } | undefined }
 /** Bind only the video surface and explicit phone controls, leaving Harness shortcuts alone. */
@@ -22,7 +23,7 @@ export function mountControls(root: HTMLElement, options: Options) {
   }
   function report(error: unknown) {
     if (disposed) return
-    hint.textContent = error instanceof Error ? error.message : String(error); hint.style.color = '#e68f8f'
+    notify(root, error, 'error')
   }
   function send(command: InputCommand): Promise<void> {
     const socket = options.socket()
@@ -108,7 +109,7 @@ export function mountControls(root: HTMLElement, options: Options) {
     sendButton.disabled = true
     try {
       await send({ kind: 'text', text: text.value, method: 'paste' })
-      hint.style.color = '#929b9a'; hint.textContent = '文字已发送，请查看手机输入框'
+      notify(root, '文字已发送，请查看手机输入框')
     } catch (error) { report(error) } finally { sendButton.disabled = !ready() }
   }
   const interval = setInterval(() => {

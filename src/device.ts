@@ -11,6 +11,8 @@ import { ReadableStream, type ReadableStreamDefaultReader } from '@yume-chan/str
 import { InputController } from './input.js'
 import { parseApps, PACKAGE_NAME, type AndroidApp } from './apps.js'
 import { discoverAdb, type AdbInstallation } from './adb.js'
+import { verifyRuntimeAssets } from './runtime-assets.js'
+import { ensureAdbServer } from './adb-server.js'
 import { diagnoseError } from './diagnostics.js'
 import {parseDeviceState,parseAppInfo,parseActivityStart,packageName as checkedPackage,viewUri} from './device-state.js'
 import {quoteAndroidArg} from './android-shell.js'
@@ -109,6 +111,7 @@ export class DeviceService {
   }
   async diagnose() {
     try {
+      await verifyRuntimeAssets('scrcpy')
       const adb = await this.adbInfo(), devices = await this.list()
       const authorized = devices.filter(device => device.state === 'device')
       const diagnostic = authorized.length ? { code: 'READY', message: `已发现 ${authorized.length} 台已授权手机`, recovery: '可以连接手机并在 Harness 聊天中发起任务' } : diagnoseError(new Error(devices.some(device => device.state === 'unauthorized' || device.state === 'authorizing') ? 'unauthorized' : devices.some(device => device.state === 'offline') ? 'offline' : '未发现手机'))
@@ -116,7 +119,10 @@ export class DeviceService {
     } catch (error) { return { ok: false, adb: null, devices: [] as DeviceInfo[], diagnostic: diagnoseError(error) } }
   }
   async list(): Promise<DeviceInfo[]> {
-    await run(await this.adbPath(), ['-P', String(this.config.adbPort), 'start-server'], { windowsHide: true, timeout: 8000 })
+    const adb = await this.adbPath()
+    await ensureAdbServer(this.config.adbPort,
+      async () => this.client.getVersion({ signal: AbortSignal.timeout(1500) }).then(version => version === 41, () => false),
+      () => run(adb, ['-P', String(this.config.adbPort), 'start-server'], { windowsHide: true, timeout: 8000 }))
     const devices = await this.client.getDevices(['device', 'unauthorized', 'offline', 'authorizing', 'recovery', 'bootloader'])
     return devices.map(d => ({ serial: d.serial, state: d.state, model: d.model?.replaceAll('_', ' ') ?? d.serial }))
   }

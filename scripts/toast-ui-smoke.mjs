@@ -1,0 +1,121 @@
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { build } from 'esbuild'
+import { chromium } from 'playwright-core'
+
+await mkdir('.build/tests', { recursive: true })
+await mkdir('.build/evidence', { recursive: true })
+const directory = await mkdtemp(join(process.cwd(), '.build/tests/toast-ui-'))
+await build({ stdin: { contents: `import {mountPanel} from './src/ui.ts';import {notify,resetNotice} from './src/browser-toast.ts';const root=document.getElementById('root');window.disposePanel=mountPanel(root);window.showToast=(message,kind='info',key)=>notify(root,message,kind,key);window.resetToast=key=>resetNotice(root,key)`, resolveDir: process.cwd() }, outfile: join(directory, 'test.js'), bundle: true, format: 'esm', platform: 'browser', target: 'chrome130' })
+let failDevices = true
+const json = (res, data, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)) }
+const server = createServer(async (req, res) => {
+  const path = req.url.split('?')[0]
+  if (path === '/test.js') { res.setHeader('content-type','text/javascript'); res.end(await readFile(join(directory,'test.js'))); return }
+  if (path === '/x-android/panel-state') return json(res, { state: { panel: 'phone', connection: 'disconnected', serial: null, autoOpen: false } })
+  if (path === '/x-android/devices') return json(res, failDevices ? { error: 'ADB 服务启动失败，请检查连接设置。' } : { devices: [] }, failDevices ? 500 : 200)
+  if (path === '/x-android/task-feed') return json(res, { tasks: [], warning: null })
+  if (path === '/x-android/media-settings') return json(res, { saved: { maxSize: 1280, maxFps: 30, videoBitRate: 4000000, audio: false, audioSource: 'output' }, active: null, audio_status: 'disabled', recording: null })
+  if (path === '/x-android/clipboard') return json(res, { error: '手机剪贴板读取失败，请重试。' }, 500)
+  if (path.startsWith('/x-android/')) return json(res, {})
+  res.setHeader('content-type','text/html; charset=utf-8')
+  res.end('<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;background:#15191e;color:#e4e8eb}#root{height:100%}</style><div id="root"></div><script type="module" src="/test.js"></script>')
+})
+await new Promise(resolve => server.listen(0,'127.0.0.1',resolve))
+const executablePath = process.env.CHROME_PATH || (process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'C:/Program Files/Google/Chrome/Application/chrome.exe')
+const browser = await chromium.launch({ executablePath, headless: true })
+const page = await browser.newPage({ viewport: { width: 840, height: 900 }, reducedMotion: 'reduce' })
+page.setDefaultTimeout(8000)
+const errors = [], checks = []
+page.on('pageerror', error => errors.push(error.message))
+const toasts = page.locator('.android-toast'), errorToasts = page.locator('.android-toast[data-kind=error]')
+const show = (message,kind='info',key) => page.evaluate(({message,kind,key}) => window.showToast(message,kind,key), {message,kind,key})
+try {
+  await page.clock.install()
+  await page.goto('http://127.0.0.1:'+server.address().port)
+  await errorToasts.filter({hasText:'ADB 服务启动失败'}).waitFor()
+  assert.equal(await page.locator('.android-error').count(),0)
+  const box = await errorToasts.first().boundingBox()
+  assert(Math.abs(840-box.x-box.width-16)<2 && Math.abs(box.y-16)<2)
+  await page.clock.fastForward(60000)
+  assert.equal(await errorToasts.count(),1)
+  await page.getByRole('button',{name:'关闭错误提示',exact:true}).click()
+  assert.equal(await errorToasts.count(),0)
+  await show('ADB 服务启动失败，请检查连接设置。','error','connection')
+  assert.equal(await errorToasts.count(),0)
+  await page.getByRole('button',{name:'刷新',exact:true}).click()
+  await errorToasts.waitFor()
+  failDevices=false
+  await page.getByRole('button',{name:'刷新',exact:true}).focus()
+  await page.getByRole('button',{name:'刷新',exact:true}).press('Enter')
+  await page.getByText('已断开，可随时连接',{exact:true}).waitFor()
+  assert.equal(await errorToasts.count(),1,'Recovery must not dismiss an error for the user')
+  await page.getByRole('button',{name:'关闭错误提示',exact:true}).click()
+  checks.push('Real device failure appears top-right; persists past 60s and recovery; manual close works; repeated background error stays dismissed; explicit retry may show a new failure')
+
+  await show('设置已保存')
+  await show('设置已保存')
+  assert.equal(await toasts.count(),1)
+  await page.mouse.move(2,800)
+  await page.clock.fastForward(5100)
+  assert.equal(await toasts.count(),0)
+  await show('可提前关闭的提示')
+  await page.getByRole('button',{name:'关闭提示',exact:true}).click()
+  assert.equal(await toasts.count(),0)
+  checks.push('Information auto-dismisses after 5s, deduplicates, and can be closed early')
+
+  await show('悬停时暂停')
+  await toasts.hover()
+  await page.clock.fastForward(6000)
+  assert.equal(await toasts.count(),1)
+  await page.mouse.move(2,800)
+  await page.clock.fastForward(5100)
+  assert.equal(await toasts.count(),0)
+  await show('键盘阅读时暂停')
+  await page.getByRole('button',{name:'关闭提示',exact:true}).focus()
+  await page.clock.fastForward(6000)
+  assert.equal(await toasts.count(),1)
+  await page.getByRole('button',{name:'关闭提示',exact:true}).press('Enter')
+  assert.equal(await toasts.count(),0)
+  checks.push('Hover and keyboard focus pause information expiry; Enter dismisses without trapping focus')
+
+  await page.getByRole('button',{name:'更多',exact:true}).click()
+  await page.getByRole('tab',{name:'剪贴板',exact:true}).click()
+  await page.locator('[data-clipboard-read]').click()
+  await errorToasts.filter({hasText:'手机剪贴板读取失败'}).waitFor()
+  await page.getByRole('button',{name:'关闭错误提示',exact:true}).click()
+  await show('对话框关闭后仍需确认的错误','error')
+  await page.getByRole('button',{name:'关闭更多操作',exact:true}).click()
+  await errorToasts.waitFor()
+  await page.getByRole('button',{name:'关闭错误提示',exact:true}).click()
+  checks.push('Real modal operation errors use a clickable top-layer toast and remain dismissible after the dialog closes')
+
+  await page.setViewportSize({width:360,height:800})
+  const long = '<img src=x onerror=window.injected=true> '+ '很长的错误路径/path/'.repeat(35)
+  await show(long,'error')
+  await show('普通提示会自动消失')
+  await page.mouse.move(2,700)
+  const layout = await errorToasts.boundingBox()
+  assert(layout.x>=0 && layout.x+layout.width<=360)
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true)
+  assert.equal(await errorToasts.locator('img').count(),0)
+  assert.equal(await page.evaluate(()=>window.injected),undefined)
+  await page.screenshot({path:'.build/evidence/toast-360.png'})
+  checks.push('Long errors wrap at 360px without horizontal overflow; server text is never interpreted as HTML')
+
+  await page.setViewportSize({width:840,height:900})
+  await page.screenshot({path:'.build/evidence/toast-840.png'})
+  await page.evaluate(()=>window.disposePanel())
+  await page.clock.fastForward(60000)
+  assert.equal(await page.locator('.android-toasts').count(),0)
+  assert.deepEqual(errors,[])
+  checks.push('Unmount removes the toast layer, listeners and timers without browser errors')
+  await writeFile('.build/evidence/toast-ui-smoke.json',JSON.stringify({pass:true,checks,errors},null,2))
+  console.log(JSON.stringify({pass:true,checks,errors},null,2))
+} catch (error) {
+  await page.screenshot({path:'.build/evidence/toast-ui-failure.png'})
+  await writeFile('.build/evidence/toast-ui-failure.json',JSON.stringify({error:String(error),checks,errors},null,2))
+  throw error
+} finally { await browser.close(); await new Promise(resolve=>server.close(resolve)) }

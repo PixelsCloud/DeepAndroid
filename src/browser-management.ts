@@ -1,4 +1,5 @@
 import type { TaskRecord } from './tasks.js'
+import { notify, resetNotice } from './browser-toast.js'
 import type { TaskTemplate } from './templates.js'
 interface Template extends TaskTemplate { parameters: string[] }
 const headers = { 'content-type': 'application/json', 'x-android-client': '1' }
@@ -8,21 +9,21 @@ export function mountManagement(root: HTMLElement): () => void {
     .android-management{font:12px/1.5 system-ui;color:inherit}.android-management nav{display:flex;gap:6px;flex-wrap:wrap}.android-management button,.android-management input,.android-management textarea,.android-management select{font:inherit;border:1px solid #8885;border-radius:6px;padding:6px 8px;background:transparent;color:inherit}.android-management button{cursor:pointer}.android-management button:disabled{opacity:.5;cursor:default}.android-management [data-view]{padding:10px 0}.android-management label{display:flex;flex-direction:column;gap:4px;margin:7px 0}.android-management textarea{width:100%;resize:vertical;min-height:90px}.android-management .note{color:#929b9a;white-space:pre-wrap;overflow-wrap:anywhere}.android-management .problem{color:#e68f8f;white-space:pre-wrap}.android-management .record-list{max-height:170px;overflow:auto;display:flex;flex-direction:column;gap:5px}.android-management .record-detail{max-height:340px;overflow:auto}.android-management .record-step{border-top:1px solid #8883;padding:7px 0;overflow-wrap:anywhere}.android-management img{max-width:100%;max-height:380px;display:block;margin:8px auto}.android-management pre{white-space:pre-wrap;font:11px/1.5 ui-monospace,monospace}.android-management [aria-pressed=true]{border-color:#168468}
   </style><div class="android-management"><nav><button data-tab="doctor">连接诊断</button><button data-tab="records">任务记录</button><button data-tab="templates">常用任务</button></nav>
   <p class="problem" role="note" data-management-error hidden></p>
-  <section data-view="doctor" hidden><button data-action="diagnose">重新诊断</button><div data-doctor-report class="note"></div><details><summary>连接与任务设置</summary><label><span>启动时恢复手机侧栏</span><input data-setting="autoOpen" type="checkbox"></label><label>ADB 路径<input data-setting="adbPath" placeholder="auto：自动查找"></label><label>每项任务最多调用次数<input data-setting="maxCalls" type="number" min="1" max="1000"></label><label>任务时限（秒）<input data-setting="timeout" type="number" min="0.1" max="3600" step="0.1"></label><button data-action="save-settings">保存设置</button><p class="note">限额用于新任务。修改 ADB 路径前请先断开手机。</p></details></section>
+  <section data-view="doctor" hidden><button data-action="diagnose">重新诊断</button><div data-doctor-report class="note"></div><p class="note">Windows 和 macOS 版已内置 ADB 和投屏服务。用 USB 数据线连接手机，开启 USB 调试并在手机上允许连接。</p><details><summary>连接与任务设置</summary><label><span>启动时恢复手机侧栏</span><input data-setting="autoOpen" type="checkbox"></label><label>ADB 路径<input data-setting="adbPath" placeholder="auto：使用内置 ADB"></label><label>每项任务最多调用次数<input data-setting="maxCalls" type="number" min="1" max="1000"></label><label>任务时限（秒）<input data-setting="timeout" type="number" min="0.1" max="3600" step="0.1"></label><button data-action="save-settings">保存设置</button><p class="note">限额用于新任务。修改 ADB 路径前请先断开手机。</p></details></section>
   <section data-view="records" hidden><button data-action="refresh-records">刷新记录</button><p class="note">记录保存在本机。本面板的文字输入参数仅记长度；截图复用 Harness 附件。</p><div class="record-list"></div><div class="record-detail"></div></section>
   <section data-view="templates" hidden><label>任务模板<select data-template></select></label><div data-parameters></div><button data-action="render-template">生成任务</button><label>任务草稿<textarea data-prompt rows="5" aria-label="手机任务草稿"></textarea></label><button data-action="copy-prompt">复制到剪贴板</button><p class="note" data-template-note>生成后复制到 Harness 聊天，粘贴并发送即可执行。</p><details><summary>保存自定义模板</summary><label>标题<input data-template-title maxlength="80"></label><label>模板正文<textarea data-template-body maxlength="5000" placeholder="例如：打开 {{app}}，搜索 {{keyword}}"></textarea></label><button data-action="save-template">保存模板</button></details></section></div>`
   function get<T extends Element>(selector: string): T { const value = root.querySelector<T>(selector); if (!value) throw new Error(selector); return value }
   const error = get<HTMLElement>('[data-management-error]'), abort = new AbortController()
   let disposed = false, active = '', templates: Template[] = [], selected = '', detailRevision = ''
   const urls = new Set<string>()
-  const report = (value: unknown) => { if (!disposed) { error.hidden = false; error.textContent = value instanceof Error ? value.message : String(value) } }
+  const report = (value: unknown) => { if (!disposed) notify(root, value, 'error', 'management') }
   async function api<T>(path: string, input?: object): Promise<T> {
     const response = await fetch('/x-android' + path, { method: input ? 'POST' : 'GET', headers, body: input ? JSON.stringify(input) : undefined, signal: AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]) })
     const value = await response.json()
     if (!response.ok) throw new Error([value.error, value.recovery].filter(Boolean).join('。') || '请求失败')
     return value as T
   }
-  const run = (work: () => Promise<void>) => { error.hidden = true; void work().catch(value => { if (!disposed) report(value) }) }
+  const run = (work: () => Promise<void>) => { resetNotice(root,'management'); void work().catch(value => { if (!disposed) report(value) }) }
   function text(parent: Element, value: string, tag = 'p', className = '') { const item = document.createElement(tag); item.textContent = value; item.className = className; parent.appendChild(item); return item }
   async function settings() {
     const panel=await api<{state:{autoOpen:boolean}}>('/panel-state');if(!disposed)get<HTMLInputElement>('[data-setting=autoOpen]').checked=panel.state.autoOpen
@@ -87,7 +88,7 @@ export function mountManagement(root: HTMLElement): () => void {
       const button = document.createElement('button'); button.textContent = `${new Date(task.startedAt).toLocaleString()} · ${statuses[task.status] ?? task.status} · ${task.operationCount} 步${task.errors ? ` · ${task.errors} 次失败` : ''}`
       button.setAttribute('aria-pressed', String(selected === task.id)); button.onclick = () => { selected = task.id; detailRevision = ''; run(() => detail(task.id)) }; list.appendChild(button)
     }
-    if (value.warning) report(value.warning)
+    if (value.warning) report(value.warning); else resetNotice(root,'management')
     if (selected) await detail(selected)
   }
   function parameters() {
@@ -109,7 +110,7 @@ export function mountManagement(root: HTMLElement): () => void {
     const select = get<HTMLSelectElement>('[data-template]'); const previous = preferred ?? select.value
     select.replaceChildren(...templates.map(template => { const option = document.createElement('option'); option.value = template.id; option.textContent = template.title; return option }))
     if (templates.some(template => template.id === previous)) select.value = previous
-    parameters(); if (value.warning) report(value.warning)
+    parameters(); if (value.warning) report(value.warning); else resetNotice(root,'management')
   }
   for (const button of root.querySelectorAll<HTMLButtonElement>('[data-tab]')) button.onclick = () => {
     const view = button.dataset.tab!; active = active === view ? '' : view
@@ -123,7 +124,7 @@ export function mountManagement(root: HTMLElement): () => void {
   get<HTMLButtonElement>('[data-action=refresh-records]').onclick = () => run(records)
   get<HTMLButtonElement>('[data-action=save-settings]').onclick = () => run(async () => {
     await api('/panel-state',{autoOpen:get<HTMLInputElement>('[data-setting=autoOpen]').checked})
-    await api('/settings', { adbPath: get<HTMLInputElement>('[data-setting=adbPath]').value, maxCalls: Number(get<HTMLInputElement>('[data-setting=maxCalls]').value), taskTimeoutMs: Number(get<HTMLInputElement>('[data-setting=timeout]').value) * 1000 }); await doctor()
+    await api('/settings', { adbPath: get<HTMLInputElement>('[data-setting=adbPath]').value, maxCalls: Number(get<HTMLInputElement>('[data-setting=maxCalls]').value), taskTimeoutMs: Number(get<HTMLInputElement>('[data-setting=timeout]').value) * 1000 }); await doctor(); notify(root,'设置已保存。')
   })
   get<HTMLSelectElement>('[data-template]').onchange = parameters
   get<HTMLButtonElement>('[data-action=render-template]').onclick = () => run(async () => {
@@ -139,12 +140,12 @@ export function mountManagement(root: HTMLElement): () => void {
       const draft = get<HTMLTextAreaElement>('[data-prompt]'); draft.focus(); draft.select()
       if (!document.execCommand('copy')) throw new Error('无法自动复制，请在任务草稿中全选后复制')
     }
-    get<HTMLElement>('[data-template-note]').textContent = '已复制。到 Harness 聊天粘贴并发送即可执行。'
+    notify(root, '已复制。到 Harness 聊天粘贴并发送即可执行。')
   })
   get<HTMLButtonElement>('[data-action=save-template]').onclick = () => run(async () => {
     const saved = await api<{ template: Template }>('/templates', { title: get<HTMLInputElement>('[data-template-title]').value, body: get<HTMLTextAreaElement>('[data-template-body]').value, defaults: Object.fromEntries([...root.querySelectorAll<HTMLInputElement>('[data-parameter]')].map(input => [input.dataset.parameter!, input.value])) })
-    await loadTemplates(saved.template.id)
+    await loadTemplates(saved.template.id); notify(root,'模板已保存。')
   })
-  const timer = setInterval(() => { if (active === 'records') run(records) }, 3000)
+  const timer = setInterval(() => { if (active === 'records') void records().catch(report) }, 3000)
   return () => { disposed = true; abort.abort(); clearInterval(timer); for (const url of urls) URL.revokeObjectURL(url); root.replaceChildren() }
 }

@@ -1,0 +1,4 @@
+# Vendored runtime assets and upstream notices must retain their exact hashes.
+vendor/** -text
+vendor/runtime-manifest.json text eol=lf
+vendor/README.md text eol=lf

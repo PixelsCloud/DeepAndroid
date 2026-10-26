@@ -1,4 +1,5 @@
 import { resultCsv, sourceNumbers, type SavedResult } from './result-format.js'
+import { notify, resetNotice } from './browser-toast.js'
 type ResultDetail = SavedResult & {task_state?:{status:string;reason:string|null}|null}
 type Summary = Omit<SavedResult,'rows'|'sources'|'summary'|'columns'|'observation_ids'> & {row_count:number;source_count:number}
 const headers={'x-android-client':'1'}
@@ -14,8 +15,8 @@ export function mountResults(root: HTMLElement) {
   const scope=root.querySelector<HTMLSelectElement>('[data-results-scope]')!,query=root.querySelector<HTMLInputElement>('[data-results-query]')!,from=root.querySelector<HTMLInputElement>('[data-results-from]')!,to=root.querySelector<HTMLInputElement>('[data-results-to]')!,count=root.querySelector<HTMLElement>('[data-results-count]')!,previous=root.querySelector<HTMLButtonElement>('[data-results-prev]')!,next=root.querySelector<HTMLButtonElement>('[data-results-next]')!,pageLabel=root.querySelector<HTMLElement>('[data-results-page]')!,notice=root.querySelector<HTMLElement>('[data-results-notice]')!,undo=root.querySelector<HTMLButtonElement>('[data-results-undo]')!,renameDialog=root.querySelector<HTMLDialogElement>('.result-rename')!,renameTitle=root.querySelector<HTMLInputElement>('[data-result-rename-title]')!,renameError=root.querySelector<HTMLElement>('[data-result-rename-error]')!
   const urls=new Set<string>()
   function text(parent:Element,value:string,tag='p',className=''){const node=document.createElement(tag);node.textContent=value;node.className=className;parent.appendChild(node);return node}
-  function report(value:unknown){if(!disposed){error.hidden=false;error.textContent=value instanceof Error?value.message:String(value)}}
-  const run=(work:()=>Promise<void>)=>{error.hidden=true;void work().catch(value=>{if(!abort.signal.aborted)report(value)})}
+  function report(value:unknown){if(!disposed)notify(root,value,'error','results')}
+  const run=(work:()=>Promise<void>)=>{resetNotice(root,'results');void work().catch(value=>{if(!abort.signal.aborted)report(value)})}
   async function request(path:string,input?:object){const response=await fetch('/x-android'+path,{method:input?'POST':'GET',headers:input?{...headers,'content-type':'application/json'}:headers,body:input?JSON.stringify(input):undefined,signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30000)])});if(!response.ok){let message='请求失败';try{const value=await response.json();message=[value.error,value.recovery].filter(Boolean).join('。')}catch{}throw new Error(message)}return response}
   function clearImages(){for(const dialog of root.querySelectorAll<HTMLDialogElement>('dialog.result-evidence'))if(dialog.open)dialog.close();for(const url of urls)URL.revokeObjectURL(url);urls.clear()}
   async function download(result:SavedResult,format:'markdown'|'csv'|'bundle'){
@@ -56,7 +57,7 @@ export function mountResults(root: HTMLElement) {
       try{await navigator.clipboard.writeText(value)}catch{
         const input=document.createElement('textarea');input.value=value;input.style.position='fixed';input.style.opacity='0';root.appendChild(input);input.select();const ok=document.execCommand('copy');input.remove();if(!ok)throw new Error('无法复制，请导出文件')
       }
-      if(!disposed&&selected===id)text(actions,'已复制，可粘贴到表格或文档。','span','result-note')
+      if(!disposed&&selected===id)notify(root,'已复制，可粘贴到表格或文档。')
     })
     button(actions,'导出 Markdown',()=>download(result,'markdown'));button(actions,'导出 CSV',()=>download(result,'csv'));button(actions,'导出依据包',()=>download(result,'bundle'))
     const evidence=document.createElement('dialog');evidence.className='result-evidence';evidence.setAttribute('aria-label','截图依据')
@@ -72,7 +73,7 @@ export function mountResults(root: HTMLElement) {
     if(result.observation_ids.length){const summarySources=document.createElement('div');detail.appendChild(summarySources);text(summarySources,'摘要依据','p','result-note');sourceButtons(summarySources,result.observation_ids)}
     detail.appendChild(evidence)
   }
-  function showNotice(message:string,undoWork?:()=>Promise<void>){notice.hidden=false;notice.querySelector('span')!.textContent=message;undo.hidden=!undoWork;undo.onclick=undoWork?()=>run(undoWork):null}
+  function showNotice(message:string,undoWork?:()=>Promise<void>){notify(root,message);notice.hidden=!undoWork;notice.querySelector('span')!.textContent=undoWork?'可撤销最近一次操作。':'';undo.hidden=!undoWork;undo.onclick=undoWork?()=>run(undoWork):null}
   async function restore(id:string,title:string){await request(`/results/${id}/restore`,{});showNotice(`已恢复“${title}”。${scope.value==='deleted'?'可切回全部结果查看。':''}`);revision='';await refresh()}
   function time(value:string,nextDay=false){const [year,month,day]=value.split('-').map(Number),date=new Date(0);date.setFullYear(year!,month!-1,day!);date.setHours(0,0,0,0);if(nextDay)date.setDate(date.getDate()+1);return date.toISOString()}
   function parameters(){const params=new URLSearchParams({query:query.value,offset:String(offset),limit:'20'});if(scope.value==='deleted')params.set('deleted','1');if(from.value)params.set('from',time(from.value));if(to.value)params.set('before',time(to.value,true));return params}
@@ -85,7 +86,7 @@ export function mountResults(root: HTMLElement) {
     try{
       const response=await request('/results?'+parameters()),value=await response.json() as ResultPage
       if(disposed||own!==filterVersion)return
-      if(value.warning)report(value.warning)
+      if(value.warning)notify(root,value.warning,'error','results-warning');else resetNotice(root,'results-warning')
       total=value.total
       if(total&&offset>=total){offset=Math.floor((total-1)/20)*20;filterVersion++;refreshAgain=true;return}
       count.textContent=`${scope.value==='deleted'?'最近删除':'全部结果'} ${scope.value==='deleted'?value.deleted_count:value.total_all} 份 · 符合条件 ${total} 份`
@@ -106,9 +107,9 @@ export function mountResults(root: HTMLElement) {
   root.querySelector<HTMLButtonElement>('[data-result-rename-cancel]')!.onclick=()=>renameDialog.close()
   root.querySelector<HTMLFormElement>('[data-result-rename-form]')!.onsubmit=event=>{
     event.preventDefault();const id=renameId,title=renameTitle.value,button=root.querySelector<HTMLButtonElement>('[data-result-rename-save]')!;button.disabled=true;renameError.hidden=true
-    void request(`/results/${id}/rename`,{title}).then(async()=>{if(disposed)return;renameDialog.close();showNotice('已重命名结果。');revision='';await refresh()}).catch(value=>{if(!disposed){renameError.hidden=false;renameError.textContent=value instanceof Error?value.message:String(value)}}).finally(()=>button.disabled=false)
+    void request(`/results/${id}/rename`,{title}).then(async()=>{if(disposed)return;renameDialog.close();showNotice('已重命名结果。');revision='';await refresh()}).catch(value=>{if(!disposed)notify(root,value,'error')}).finally(()=>button.disabled=false)
   }
   root.querySelector<HTMLButtonElement>('[data-results-refresh]')!.onclick=()=>run(refresh)
-  const timer=setInterval(()=>{if(visible)void refresh().catch(value=>{if(!abort.signal.aborted)report(value)})},3000)
+  const timer=setInterval(()=>{if(visible)void refresh().then(()=>resetNotice(root,'results')).catch(value=>{if(!abort.signal.aborted)report(value)})},3000)
   return {async open(id:string){const response=await request('/results/'+encodeURIComponent(id)),result=await response.json() as ResultDetail&{page_offset?:number};if(disposed)return;clearTimeout(searchTimer);scope.value='active';query.value='';from.value='';to.value='';offset=result.page_offset??0;selected=id;openTarget=id;followLatest=false;revision='';filterVersion++;generation++;requestVersion++;clearImages();error.hidden=true;await render(id);await refresh()},show(value:boolean){visible=value;if(value)run(refresh)},dispose(){disposed=true;abort.abort();clearInterval(timer);clearTimeout(searchTimer);clearImages();if(renameDialog.open)renameDialog.close();root.replaceChildren()}}
 }

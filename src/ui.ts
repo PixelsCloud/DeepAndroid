@@ -8,6 +8,7 @@ import { mountTasks } from './browser-tasks.js'
 import { mountFiles } from './browser-files.js'
 import { mountExtra } from './browser-extra.js'
 import { PhoneAudio } from './browser-audio.js'
+import { mountToasts, notify, resetNotice } from './browser-toast.js'
 import { DEFAULT_PANEL_STATE, type PanelState } from './panel-state-format.js'
 
 interface DeviceInfo { serial: string; state: string; model: string }
@@ -32,11 +33,10 @@ export function mountPanel(root: HTMLElement): () => void {
     .android-video{position:relative;min-width:0;min-height:0;display:flex;align-items:flex-start;justify-content:center;border-radius:12px;overflow:hidden;background:#090d11;border:1px solid #8883;touch-action:none;user-select:none;outline-offset:2px}.android-video:focus-visible{outline:2px solid #168468}.android-video canvas{display:block;max-width:100%;max-height:100%;object-fit:contain}
     .android-placeholder{position:absolute;color:#8b949d;text-align:center;padding:16px;pointer-events:none}.android-placeholder span{display:block;font-size:34px;margin-bottom:10px}
     .android-phone-keys{display:flex;flex-direction:column;align-self:start;gap:8px}.android-phone-keys button{width:100%;padding:8px 5px;white-space:nowrap}.android-key-divider{height:1px;background:#8883;margin:2px 0}
-    .android-meta{font:11px/1.5 ui-monospace,monospace;color:#929b9a;overflow-wrap:anywhere;margin-bottom:14px}.android-error{flex:none;padding:10px;border-radius:8px;color:#e68f8f;background:#b33b3b12;border:1px solid #b33b3b44}.android-hint{font-size:11px;color:#929b9a;margin:0}
+    .android-meta{font:11px/1.5 ui-monospace,monospace;color:#929b9a;overflow-wrap:anywhere;margin-bottom:14px}.android-hint{font-size:11px;color:#929b9a;margin:0}
     .android-text-row{display:flex;gap:8px;flex:none}.android-phone-text{flex:1;min-width:0;resize:vertical;max-height:120px;font:inherit;border:1px solid #8885;border-radius:8px;background:transparent;color:inherit;padding:8px}.android-debug-view{min-height:0;overflow:auto}
   </style><section class="android-panel" aria-label="手机面板">
     <nav class="android-panel-tabs" role="tablist" aria-label="面板视图"><button role="tab" data-panel-tab="phone" aria-selected="true">手机</button><button role="tab" data-panel-tab="files" aria-selected="false" tabindex="-1">文件</button><button role="tab" data-panel-tab="tasks" aria-selected="false" tabindex="-1">任务</button><button role="tab" data-panel-tab="results" aria-selected="false" tabindex="-1">结果</button><button role="tab" data-panel-tab="debug" aria-selected="false" tabindex="-1">调试</button></nav>
-    <div class="android-error" role="alert" hidden></div>
     <div class="android-phone-view" data-panel="phone" role="tabpanel" aria-label="手机">
       <div class="android-controls"><select aria-label="USB 手机"></select><button data-action="refresh" title="刷新设备">刷新</button></div>
       <div class="android-status"><i class="android-dot"></i><span role="status">正在查找 USB 手机…</span></div>
@@ -66,7 +66,7 @@ export function mountPanel(root: HTMLElement): () => void {
   const refreshButton = get<HTMLButtonElement>('[data-action=refresh]')
   const status = get<HTMLElement>('[data-panel=phone] [role=status]')
   const dot = get<HTMLElement>('.android-dot')
-  const errorBox = get<HTMLElement>('[role=alert]')
+  const toasts = mountToasts(root)
   const video = get<HTMLElement>('.android-video')
   const placeholder = get<HTMLElement>('.android-placeholder')
   const meta = get<HTMLElement>('.android-meta')
@@ -87,7 +87,7 @@ export function mountPanel(root: HTMLElement): () => void {
   let retryTimer:ReturnType<typeof setTimeout>|undefined,stableTimer:ReturnType<typeof setTimeout>|undefined
   let authorized=new Set<string>()
   connect.disabled=true
-  function persist(patch:Partial<PanelState>){pendingState={...pendingState,...patch};uiState={...uiState,...patch};stateWrites=stateWrites.then(()=>stateReady).then(async()=>{await api('/panel-state',patch)}).catch(error=>{if(!disposed){errorBox.hidden=false;errorBox.textContent='面板状态保存失败，当前操作仍可继续：'+String(error.message??error)}});return stateWrites}
+  function persist(patch:Partial<PanelState>){pendingState={...pendingState,...patch};uiState={...uiState,...patch};stateWrites=stateWrites.then(()=>stateReady).then(async()=>{await api('/panel-state',patch);resetNotice(root,'panel-state')}).catch(error=>{if(!disposed)notify(root,'面板状态保存失败，当前操作仍可继续：'+String(error.message??error),'error','panel-state')});return stateWrites}
   function scheduleRetry(message:string){
     if(disposed||!desiredConnection)return
     if(retryCount>=3){setStatus('重连已停止，请连接或刷新设备','#dc7777');return}
@@ -137,7 +137,7 @@ export function mountPanel(root: HTMLElement): () => void {
   function fail(error: unknown) {
     if (disposed) return
     generation++; clearVideo()
-    errorBox.hidden = false; errorBox.textContent = error instanceof Error ? error.message : String(error)
+    notify(root, error, 'error', 'connection')
     setStatus('连接异常，可重新连接', '#dc7777'); connect.disabled = !authorized.has(select.value); disconnect.disabled = false; select.disabled = false
     scheduleRetry('连接中断')
   }
@@ -170,11 +170,11 @@ export function mountPanel(root: HTMLElement): () => void {
   async function start(automatic=false) {
     if(!authorized.has(select.value)){setStatus('请选择已授权手机');return}
     desiredConnection=true;clearTimeout(retryTimer)
-    if(!automatic){retryCount=0;root.dataset.reconnectAttempts='0'}
+    if(!automatic){retryCount=0;root.dataset.reconnectAttempts='0';resetNotice(root,'connection')}
     void persist({serial:select.value,connection:'connected'})
     if (!WebCodecsVideoDecoder.isSupported) { fail(new Error('当前环境无法使用 WebCodecs，请使用受支持的 Harness 桌面版或 Chromium 浏览器')); return }
     const own = ++generation
-    clearVideo(); errorBox.hidden = true
+    clearVideo()
     root.dataset.framesRendered = '0'; delete root.dataset.firstFrameMs
     connect.disabled = true; disconnect.disabled = false; select.disabled = true
     frames = 0; received = 0; queued = 0; serial = select.value; connectingAt = performance.now()
@@ -235,20 +235,20 @@ export function mountPanel(root: HTMLElement): () => void {
     try {
       await api('/disconnect', {})
       if (disposed) return
-      errorBox.hidden = true; setStatus('已断开'); select.disabled = false; connect.disabled = !authorized.has(select.value)
+      resetNotice(root,'connection'); setStatus('已断开'); select.disabled = false; connect.disabled = !authorized.has(select.value)
       meta.textContent = 'H.264 · scrcpy 5.0.1 · WebCodecs'
     } catch (error) { fail(error) }
   }
   connect.onclick = () => { void start() }
   disconnect.onclick = () => { void stop() }
-  refreshButton.onclick=()=>{retryCount=0;clearTimeout(retryTimer);void refresh(desiredConnection)}
+  refreshButton.onclick=()=>{retryCount=0;clearTimeout(retryTimer);resetNotice(root,'connection');void refresh(desiredConnection)}
   select.onchange=()=>{desiredConnection=false;clearTimeout(retryTimer);void persist({serial:select.value||null,connection:'disconnected'});connect.disabled=!authorized.has(select.value)||Boolean(socket)}
   const interval = setInterval(() => {
     if (!decoder) return
     if (decoder.framesRendered > 0) {
       clearTimeout(timeout); placeholder.hidden = true
       setStatus('实时画面已连接', '#51b88f')
-      if(frames===0){root.dataset.firstFrameMs=String(Math.round(performance.now()-connectingAt));stableTimer=setTimeout(()=>{retryCount=0;root.dataset.reconnectAttempts='0'},10000)}
+      if(frames===0){resetNotice(root,'connection');root.dataset.firstFrameMs=String(Math.round(performance.now()-connectingAt));stableTimer=setTimeout(()=>{retryCount=0;root.dataset.reconnectAttempts='0'},10000)}
     }
     frames = decoder.framesRendered
     root.dataset.framesRendered = String(frames)
@@ -256,7 +256,7 @@ export function mountPanel(root: HTMLElement): () => void {
   }, 500)
   stateReady=api<{state:PanelState}>('/panel-state').then(value=>{if(disposed)return;uiState={...DEFAULT_PANEL_STATE,...value.state,...pendingState};if(!interacted)showPanel(uiState.panel,false)}).catch(error=>console.warn('[dsh-android] panel restoration:',String(error)))
   void stateReady.then(()=>{if(!disposed)void refresh()})
-  return () => { disposed = true;desiredConnection=false;clearTimeout(retryTimer);clearTimeout(stableTimer); generation++; clearInterval(interval); clearVideo(); controls.dispose(); disposeManagement(); resultView.dispose();disposeTasks();fileView.dispose();extra.dispose();audio.dispose(); root.replaceChildren() }
+  return () => { disposed = true;toasts.dispose();desiredConnection=false;clearTimeout(retryTimer);clearTimeout(stableTimer); generation++; clearInterval(interval); clearVideo(); controls.dispose(); disposeManagement(); resultView.dispose();disposeTasks();fileView.dispose();extra.dispose();audio.dispose(); root.replaceChildren() }
 }
 
 interface ReactLike {

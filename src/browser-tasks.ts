@@ -1,3 +1,4 @@
+import { notify, resetNotice } from './browser-toast.js'
 import type { TaskView } from './task-feed.js'
 const headers={'x-android-client':'1','content-type':'application/json'}
 const statuses:Record<string,string>={running:'进行中',completed:'执行已结束',cancelled:'已停止',interrupted:'执行中断',limited:'达到任务限额',unknown:'上次执行结果待确认'}
@@ -8,7 +9,7 @@ export function mountTasks(root:HTMLElement,openResult:(id:string)=>Promise<void
  const get=<T extends Element>(selector:string)=>root.querySelector<T>(selector)!
  const card=get<HTMLElement>('.android-task'),title=get<HTMLElement>('[data-task-title]'),status=get<HTMLElement>('[data-task-status]'),step=get<HTMLElement>('[data-task-step]'),progress=get<HTMLElement>('[data-task-progress]'),details=get<HTMLElement>('[data-task-details]'),reports=get<HTMLElement>('.task-reports'),select=get<HTMLSelectElement>('select'),stop=get<HTMLButtonElement>('[data-task-stop]'),evidence=get<HTMLButtonElement>('[data-task-evidence]'),resume=get<HTMLButtonElement>('[data-task-continue]'),feedback=get<HTMLElement>('.task-feedback'),draft=get<HTMLDialogElement>('[aria-label="继续任务草稿"]'),image=get<HTMLDialogElement>('[aria-label="任务截图"]')
  const abort=new AbortController();let disposed=false,inflight=false,busy=false,selected='',followLatest=true,task:TaskView|undefined,tasks:TaskView[]=[],revision='',imageUrl='',imageRequest=0,requestEpoch=0
- const note=(text:string,kind='action')=>{feedback.hidden=!text;feedback.textContent=text;feedback.dataset.kind=kind}
+ const note=(text:string,kind='action')=>{feedback.hidden=true;feedback.dataset.kind=kind;if(!text){resetNotice(root,'task-poll');return}notify(root,text,kind==='action'?'info':'error',kind==='poll'||kind==='warning'?'task-poll':undefined)}
  async function api(path:string,body?:object){const response=await fetch('/x-android'+path,{headers,method:body?'POST':'GET',body:body?JSON.stringify(body):undefined,signal:AbortSignal.any([abort.signal,AbortSignal.timeout(30000)])});const value=await response.json();if(!response.ok)throw new Error(value.error??'任务操作失败');return value}
  function text(parent:Element,value:string,tag='p',className=''){const element=document.createElement(tag);element.textContent=value;element.className=className;parent.appendChild(element);return element}
  function elapsed(){if(!task)return;const end=task.endedAt?Date.parse(task.endedAt):Date.now(),seconds=Math.max(0,Math.floor((end-Date.parse(task.startedAt))/1000));const time=seconds<60?`${seconds} 秒`:`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`;status.textContent=`${task.phase==='stopping'?'正在停止，保留已读取内容':statuses[task.status]??'执行状态待确认'} · ${time} · ${task.calls} 次调用`}
@@ -33,13 +34,13 @@ export function mountTasks(root:HTMLElement,openResult:(id:string)=>Promise<void
   if(select.dataset.revision!==optionsKey){select.replaceChildren(...value.tasks.map(item=>{const option=document.createElement('option');option.value=item.id;option.textContent=`${item.title} · ${statuses[item.status]??item.status} · ${new Date(item.startedAt).toLocaleTimeString()}`;return option}));select.dataset.revision=optionsKey}
   select.hidden=value.tasks.length<2;select.value=selected;const current=value.tasks.find(item=>item.id===selected)
   if(current)render(current);else{card.hidden=true;task=undefined}
-  if(value.warning)note(value.warning,'warning');else if(feedback.dataset.kind==='poll')note('')
+  if(value.warning)note(value.warning,'warning');else if(['poll','warning'].includes(feedback.dataset.kind??''))note('')
  }catch(error){if(!disposed&&epoch===requestEpoch)note('任务状态暂时无法刷新：'+String((error as Error).message??error),'poll')}finally{inflight=false}}
- async function action(work:()=>Promise<unknown>){if(busy||disposed)return;busy=true;stop.disabled=true;resume.disabled=true;note('');try{await work()}catch(error){if(!disposed)note(String((error as Error).message??error))}finally{busy=false;if(!disposed){stop.disabled=false;resume.disabled=false;void refresh()}}}
+ async function action(work:()=>Promise<unknown>){if(busy||disposed)return;busy=true;stop.disabled=true;resume.disabled=true;note('');try{await work()}catch(error){if(!disposed)note(String((error as Error).message??error),'error')}finally{busy=false;if(!disposed){stop.disabled=false;resume.disabled=false;void refresh()}}}
  select.onchange=()=>{selected=select.value;followLatest=false;revision='';requestEpoch++;const current=tasks.find(item=>item.id===selected);if(current)render(current);else{task=undefined;stop.disabled=true;evidence.disabled=true;resume.disabled=true}void refresh()}
  stop.onclick=()=>{const id=task?.id;if(id)void action(async()=>{requestEpoch++;await api('/task-feed/'+id+'/stop',{});note('已请求停止此任务，手机画面继续显示。')})}
  resume.onclick=()=>{const id=task?.id;if(id)void action(async()=>{const value=await api('/task-feed/'+id+'/draft',{});if(disposed)return;const area=get<HTMLTextAreaElement>('textarea');area.value=value.prompt;area.setSelectionRange(0,0);get<HTMLElement>('[data-task-copy-note]').textContent='';draft.showModal();area.scrollTop=0})}
- get<HTMLButtonElement>('[data-task-draft-copy]').onclick=()=>{void navigator.clipboard.writeText(get<HTMLTextAreaElement>('textarea').value).then(()=>{if(!disposed)get<HTMLElement>('[data-task-copy-note]').textContent='已复制。请在原对话检查后发送。'}).catch(()=>{if(!disposed)get<HTMLElement>('[data-task-copy-note]').textContent='复制失败，请手动选择草稿复制。'})}
+ get<HTMLButtonElement>('[data-task-draft-copy]').onclick=()=>{void navigator.clipboard.writeText(get<HTMLTextAreaElement>('textarea').value).then(()=>{if(!disposed)notify(root,'已复制。请在原对话检查后发送。')}).catch(()=>{if(!disposed)notify(root,'复制失败，请手动选择草稿复制。','error')})}
  get<HTMLButtonElement>('[data-task-draft-close]').onclick=()=>draft.close()
  function clearImage(){imageRequest++;if(imageUrl)URL.revokeObjectURL(imageUrl);imageUrl='';get<HTMLImageElement>('img').removeAttribute('src')}
  image.addEventListener('close',clearImage);get<HTMLButtonElement>('[data-task-image-close]').onclick=()=>image.close()

@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createReadStream,createWriteStream } from 'node:fs'
 import { mkdir,readFile,stat,rename,link,unlink,readdir } from 'node:fs/promises'
-import { resolve,join,basename,isAbsolute,extname } from 'node:path'
+import { resolve,join,basename,dirname,isAbsolute,extname,posix } from 'node:path'
 import { randomUUID,createHash } from 'node:crypto'
 import { Transform,type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -15,6 +15,7 @@ export {remotePath} from './remote-path.js'
 export {quoteAndroidArg as shellArg} from './android-shell.js'
 
 const run=promisify(execFile),MAX_BYTES=2*1024**3
+function cacheSuffix(name:string){const suffix=posix.extname(name);return /^\.[a-z0-9]{1,16}$/i.test(suffix)?suffix:'.bin'}
 export interface FileJob {id:string;kind:'push'|'pull'|'install';serial:string;status:'running'|'completed'|'failed'|'cancelled';started_at:string;finished_at?:string;local_path:string;remote_path?:string;bytes?:number;sha256?:string;error?:string;output?:string;phase?:string;background?:boolean;cancel_requested?:boolean;outcome_uncertain?:boolean}
 export class FileService{
   readonly directory:string
@@ -35,7 +36,7 @@ export class FileService{
   async stage(source:Readable,name:string,signal:AbortSignal){
     if(this.closed)throw new Error('文件服务已关闭');if(this.uploadAborts.size>=3||this.uploads.size>=8)throw new Error('暂存文件过多，请等待传输结束或重新加载面板服务')
     const id=randomUUID(),clean=basename(name.replaceAll('\\','/'));if(!clean||clean.length>240||/[\0\r\n]/.test(clean))throw new Error('文件名无效')
-    const path=join(this.directory,`upload-${id}${extname(clean)}`);let bytes=0
+    const path=join(this.directory,`upload-${id}${cacheSuffix(clean)}`);let bytes=0
     const abort=new AbortController();this.uploadAborts.add(abort)
     const writing=pipeline(source,new Transform({transform(chunk,_encoding,done){bytes+=chunk.length;done(bytes>MAX_BYTES?new Error('文件超过 2 GiB 上限'):null,chunk)}}),createWriteStream(path,{flags:'wx'}),{signal:AbortSignal.any([signal,abort.signal])});this.uploadPending.add(writing)
     try{await writing;this.uploads.set(id,{path,name:clean,bytes});return{id,name:clean,bytes}}
@@ -44,29 +45,30 @@ export class FileService{
   }
   source(local?:string,upload?:string){if(upload){const staged=this.uploads.get(upload);if(!staged)throw new Error('暂存文件不存在或插件已重启，请重新选择文件');return staged.path}if(!local||!isAbsolute(local)||/[\0\r\n]/.test(local))throw new Error('电脑文件须为绝对路径');return resolve(local)}
   uploadName(id:string){return this.uploads.get(id)?.name}
+  async discardUpload(id:string){const upload=this.uploads.get(id);if(upload){this.uploads.delete(id);await unlink(upload.path).catch(()=>{})}}
   async listRemote(serial:string,path:string,signal:AbortSignal){
     path=remotePath(path);signal.throwIfAborted();const adb=await this.device.client.createAdb({serial});const abort=()=>void adb.close();signal.addEventListener('abort',abort,{once:true})
     try{signal.throwIfAborted();const entries=await adb.sync.readdir(path);return{serial,path,entries:entries.filter(e=>e.name!=='.'&&e.name!=='..').slice(0,1000).map(e=>({name:e.name,type:(e.mode&0xf000)===0x4000?'directory':(e.mode&0xf000)===0xa000?'symlink':'file',bytes:Number(e.size),modified_at:Number(e.mtime)})),truncated:entries.length>1000}}
     finally{signal.removeEventListener('abort',abort);await adb.close()}
   }
-  async start(kind:FileJob['kind'],serial:string,args:{local_path?:string;upload_id?:string;remote_path?:string;overwrite?:boolean;background?:boolean},signal:AbortSignal){
+  async start(kind:FileJob['kind'],serial:string,args:{local_path?:string;upload_id?:string;remote_path?:string;overwrite?:boolean;background?:boolean;expected_destination_version?:string},signal:AbortSignal){
     if(this.closed)throw new Error('文件服务已关闭')
     if(this.active.size>=3)throw new Error('最多同时执行 3 个文件操作')
     signal.throwIfAborted();const id=randomUUID(),abort=new AbortController(),combined=AbortSignal.any([...(args.background?[AbortSignal.timeout(300000)]:[signal]),abort.signal])
-    const local=kind==='pull'?(args.local_path?this.source(args.local_path):join(this.directory,`download-${id}-${basename(remotePath(args.remote_path))}`)):this.source(args.local_path,args.upload_id)
+    const local=kind==='pull'?(args.local_path?this.source(args.local_path):join(this.directory,`download-${id}${cacheSuffix(remotePath(args.remote_path))}`)):this.source(args.local_path,args.upload_id)
     const remote=kind==='install'?undefined:remotePath(args.remote_path??('/sdcard/Download/'+(args.upload_id?this.uploadName(args.upload_id):basename(local))))
     if(kind!=='install'&&remote==='/')throw new Error('目标必须是文件路径，不能是根目录')
     const job:FileJob={id,kind,serial,status:'running',phase:'preparing',background:args.background===true,started_at:new Date().toISOString(),local_path:local,...(remote?{remote_path:remote}:{})}
     this.jobs.set(id,job);this.active.set(id,abort)
     if(args.upload_id)this.uploads.delete(args.upload_id)
     try{await this.persist(job);signal.throwIfAborted();combined.throwIfAborted()}catch(error){job.status='cancelled';job.finished_at=new Date().toISOString();job.error=String(error);this.active.delete(id);if(args.upload_id)await unlink(local).catch(()=>{});await this.persist(job).catch(()=>{});throw error}
-    const promise=(async()=>{try{await this.perform(job,args.overwrite===true,combined);combined.throwIfAborted();job.status='completed';job.phase='finished'}catch(error){job.status=combined.aborted?'cancelled':'failed';job.outcome_uncertain=combined.aborted;job.error=String((error as Error).message??error).slice(0,2000)}finally{job.finished_at=new Date().toISOString();this.active.delete(id);if(args.upload_id)await unlink(local).catch(()=>{});await this.persist(job)}return{...job}})()
+    const promise=(async()=>{try{await this.perform(job,args.overwrite===true,combined,args.expected_destination_version);combined.throwIfAborted();job.status='completed';job.phase='finished'}catch(error){job.status=combined.aborted?'cancelled':'failed';job.outcome_uncertain=combined.aborted;job.error=String((error as Error).message??error).slice(0,2000)}finally{job.finished_at=new Date().toISOString();this.active.delete(id);if(args.upload_id)await unlink(local).catch(()=>{});await this.persist(job)}return{...job}})()
     this.pending.add(promise);void promise.finally(()=>this.pending.delete(promise)).catch(()=>{})
     return{id,promise}
   }
-  private async perform(job:FileJob,overwrite:boolean,signal:AbortSignal){
+  private async perform(job:FileJob,overwrite:boolean,signal:AbortSignal,expectedVersion?:string){
     const adb=(await this.device.adbInfo()).path,args=['-P',String(this.device.config.adbPort),'-s',job.serial]
-    const command=(extra:string[],timeout=300_000)=>{signal.throwIfAborted();return run(adb,[...args,...extra],{windowsHide:true,timeout,maxBuffer:2*1024**2,signal})}
+    const command=(extra:string[],timeout=300_000)=>{signal.throwIfAborted();return run(adb,[...args,...extra],{windowsHide:true,timeout,maxBuffer:2*1024**2,signal}).catch(error=>{const details=error as Error&{stdout?:string;stderr?:string},message=((details.stdout??'')+(details.stderr??'')).trim();if(message&&!signal.aborted)throw new Error(message.slice(0,2000));throw error})}
     if(job.kind==='install'){
       if(extname(job.local_path).toLowerCase()!=='.apk')throw new Error('仅支持单个 .apk；拆分 APK / XAPK 尚不支持')
       const info=await stat(job.local_path);if(!info.isFile()||info.size>MAX_BYTES)throw new Error('APK 无效或超过 2 GiB')
@@ -78,13 +80,13 @@ export class FileService{
     }
     if(job.kind==='push'){
       const info=await stat(job.local_path);if(!info.isFile()||info.size>MAX_BYTES)throw new Error('只支持不超过 2 GiB 的普通文件')
-      job.bytes=info.size;const target=job.remote_path!,temporary=target+'.dsh-'+job.id+'.part'
+      job.bytes=info.size;const target=job.remote_path!,temporary=target.slice(0,target.lastIndexOf('/')+1)+'.dsh-'+job.id+'.part'
       try{
         // Shell arguments are quoted for the Android shell, in addition to execFile's local argv isolation.
         const check=await command(['shell',`if [ -d ${shellArg(target)} ]; then echo DIRECTORY; elif [ -e ${shellArg(target)} ] || [ -L ${shellArg(target)} ]; then echo EXISTS; fi`]);if(check.stdout.trim()==='DIRECTORY')throw new Error('手机目标是目录，请提供完整的目标文件名');if(!overwrite&&check.stdout.trim()==='EXISTS')throw new Error('手机目标文件已存在；需要明确 overwrite=true 才可覆盖')
         job.phase='transferring';await command(['push',job.local_path,temporary]);signal.throwIfAborted()
         job.phase='committing'
-        await this.remote.publishTransfer(job.serial,temporary,target,overwrite,signal)
+        await this.remote.publishTransfer(job.serial,temporary,target,overwrite,signal,expectedVersion)
         job.phase='verifying';job.sha256=await fileHash(job.local_path,signal)
         const verification=await command(['shell',`sha256sum ${shellArg(target)}`]);if(verification.stdout.trim().slice(0,64)!==job.sha256)throw new Error('手机文件 SHA-256 与当前电脑源文件不同，请核对源文件是否在传输时发生变化')
       }finally{await run(adb,[...args,'shell',`rm -f ${shellArg(temporary)}`],{windowsHide:true,timeout:5000}).catch(()=>{})}
@@ -92,7 +94,7 @@ export class FileService{
       if(!overwrite){try{await stat(job.local_path);throw new Error('电脑目标文件已存在；需要明确 overwrite=true 才可覆盖')}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error}}
       const connection=await this.device.client.createAdb({serial:job.serial})
       try{const info=await connection.sync.lstat(job.remote_path!);if((info.mode&0xf000)!==0x8000||Number(info.size)>MAX_BYTES)throw new Error('只支持不超过 2 GiB 的普通文件')}finally{await connection.close()}
-      const temporary=job.local_path+'.dsh-'+job.id+'.part'
+      const temporary=join(dirname(job.local_path),'.dsh-pull-'+job.id+'.part')
       try{job.phase='transferring';await command(['pull',job.remote_path!,temporary]);signal.throwIfAborted();job.phase='verifying';job.bytes=(await stat(temporary)).size;job.sha256=await fileHash(temporary,signal);job.phase='committing';if(overwrite)await rename(temporary,job.local_path);else{await link(temporary,job.local_path);await unlink(temporary)}}finally{await unlink(temporary).catch(()=>{})}
     }
   }

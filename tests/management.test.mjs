@@ -18,8 +18,14 @@ const image={attachmentId:'test-screenshot',mediaType:'image/png',bytes:20,width
 test('ADB discovery honors explicit paths and environment precedence without a development directory',async()=>{
   assert.deepEqual(adbCandidates('C:/custom/adb.exe',{ANDROID_HOME:'D:/sdk'},'win32'),['C:/custom/adb.exe'])
   assert.deepEqual(adbCandidates('auto',{DSH_ANDROID_ADB_PATH:'C:/chosen/adb.exe'},'win32'),['C:/chosen/adb.exe'])
-  const candidates=adbCandidates('auto',{ANDROID_HOME:'C:/sdk',ANDROID_SDK_ROOT:'C:/sdk'},'win32')
-  assert.equal(candidates[0],'adb');assert.equal(candidates.length,2);assert(candidates[1].includes('platform-tools'))
+  const candidates=adbCandidates('auto',{ANDROID_HOME:'C:/sdk',ANDROID_SDK_ROOT:'C:/sdk'},'win32','x64')
+  assert(candidates[0].replaceAll('\\','/').endsWith('/vendor/adb/windows/adb.exe'));assert.equal(candidates[1],'adb');assert.equal(candidates.length,3);assert(candidates[2].includes('platform-tools'))
+  assert.equal(adbCandidates('auto',{},'linux','x64')[0],'adb')
+  for (const arch of ['x64','arm64']) {
+    assert(adbCandidates('auto',{},'darwin',arch)[0].replaceAll('\\','/').endsWith('/vendor/adb/macos/adb'))
+    assert.deepEqual(adbCandidates('/custom/adb',{DSH_ANDROID_ADB_PATH:'/ignored/adb'},'darwin',arch),['/custom/adb'])
+    assert.deepEqual(adbCandidates('auto',{DSH_ANDROID_ADB_PATH:'/chosen/adb'},'darwin',arch),['/chosen/adb'])
+  }
   await assert.rejects(discoverAdb('C:/__dsh_nonexistent__/adb.exe',{}),error=>error.diagnostic.code==='ADB_MISSING')
 })
 test('diagnostics identify authorization, focus, cancellation, model support and stale observation recovery',()=>{

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomBytes } from 'node:crypto'
 import { readFile,stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
-import { basename } from 'node:path'
+import { basename,posix } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { WebSocketServer, WebSocket } from 'ws'
@@ -24,6 +24,8 @@ import { taskView,continuationDraft } from './task-feed.js'
 import { FileService } from './files.js'
 import { MediaStore,mediaPatch } from './media-settings.js'
 import { RecordingService } from './recording.js'
+import {FileManagerService} from './file-manager.js'
+import {deviceSerial,type DirectoryOptions} from './file-manager-model.js'
 
 export const name = 'dsh-android'
 export const inject = ['webServer', 'tools', 'attachments', 'llm']
@@ -44,6 +46,7 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid request')
   return value as Record<string, unknown>
 }
+async function managerRead<T>(req:IncomingMessage,res:ServerResponse,timeout:number,work:(signal:AbortSignal)=>Promise<T>){const abort=new AbortController(),timer=setTimeout(()=>abort.abort(new Error('文件查询超时')),timeout),closed=()=>{if(!res.writableFinished)abort.abort(new Error('文件查询已取消'))};req.once('aborted',closed);res.once('close',closed);try{return await work(abort.signal)}finally{clearTimeout(timer);req.off('aborted',closed);res.off('close',closed)}}
 interface PanelServices { readImage?(ref: ImageAttachmentRef): Promise<{ data: Uint8Array }> }
 export async function createPanel(config: PluginConfig = {}, nativeTools: () => string[] = () => [], services: PanelServices = {}) {
   const { version: pluginVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
@@ -58,6 +61,7 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
   const runtime = new AndroidRuntime(service, tasks, results)
   const media=new MediaStore(config.dataDir);await media.load(Object.fromEntries(['maxSize','maxFps','videoBitRate','audio','audioSource'].filter(key=>config[key as keyof PluginConfig]!==undefined).map(key=>[key,config[key as keyof PluginConfig]])))
   const files=new FileService(service,config.dataDir);await files.load()
+  const fileManager=new FileManagerService(files);await fileManager.load()
   const recordings=new RecordingService(runtime,config.dataDir);await recordings.load()
   const tickets = new Map<string, { serial: string; expires: number }>()
   const downloadTickets=new Map<string,{id:string;expires:number}>()
@@ -121,6 +125,14 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
         downloadAuthorized=!!ticket&&ticket.id===route.slice('/download/'.length)&&ticket.expires>Date.now()
       }
       if (!authorized(req)&&!downloadAuthorized) { json(res, 403, { error: 'Invalid client request' }); return }
+      if(route==='/file-manager/directory'&&req.method==='GET'){const q=new URL(req.url??'/','http://localhost').searchParams,options:DirectoryOptions={offset:Number(q.get('offset')??0),limit:Number(q.get('limit')??200),sort:(q.get('sort')??'name')as DirectoryOptions['sort'],descending:q.get('descending')==='1',hidden:q.get('hidden')==='1',filter:q.get('filter')??''};json(res,200,await managerRead(req,res,30000,signal=>fileManager.listDirectory(deviceSerial(q.get('serial')),q.get('path')??'/sdcard/Download',options,signal)));return}
+      if(route==='/file-manager/stat'&&req.method==='GET'){const q=new URL(req.url??'/','http://localhost').searchParams;json(res,200,await managerRead(req,res,140000,signal=>files.remote.stat(deviceSerial(q.get('serial')),q.get('path')??'',q.get('hash')==='1',signal)));return}
+      if(route==='/file-manager/places'&&req.method==='GET'){json(res,200,{places:fileManager.places,lastSerial:fileManager.lastSerial});return}
+      if(route==='/file-manager/places'&&req.method==='POST'){json(res,200,await fileManager.savePlace(await body(req)));return}
+      if(route==='/file-manager/jobs'&&req.method==='GET'){json(res,200,{jobs:fileManager.list(),transfers:files.list(),recordings:recordings.list()});return}
+      if(route==='/file-manager/jobs'&&req.method==='POST'){json(res,202,await fileManager.enqueue(await body(req)));return}
+      if(route.startsWith('/file-manager/jobs/')){const[id,action]=route.slice('/file-manager/jobs/'.length).split('/');if(req.method==='GET'&&!action){const job=fileManager.get(id!);if(!job){json(res,404,{error:'文件作业不存在'});return}json(res,200,job);return}if(req.method==='POST'){const input=await body(req);if(action==='cancel'){json(res,200,await fileManager.cancel(id!));return}if(action==='resolve'){json(res,200,await fileManager.resolve(id!,input));return}if(action==='retry'){json(res,202,await fileManager.retry(id!,input.confirm_uncertain===true));return}}}
+      if(route.startsWith('/file-manager/discard-upload/')&&req.method==='POST'){const id=route.slice('/file-manager/discard-upload/'.length);json(res,200,await fileManager.discardUpload(id));return}
       if(route==='/download-ticket'&&req.method==='POST'){const input=await body(req);if(typeof input.id!=='string')throw new Error('文件标识无效');const job=files.get(input.id),record=recordings.get(input.id);if(!(job?.kind==='pull'&&job.status==='completed')&&record?.status!=='saved')throw new Error('文件不存在或尚未保存');for(const[k,v]of downloadTickets)if(v.expires<Date.now())downloadTickets.delete(k);if(downloadTickets.size>=16)throw new Error('下载请求过多，请稍候');const key=randomBytes(24).toString('hex');downloadTickets.set(key,{id:input.id,expires:Date.now()+15000});json(res,200,{url:`/x-android/download/${input.id}?ticket=${key}`});return}
       if(route==='/media-settings'&&req.method==='GET'){json(res,200,{saved:media.value,active:runtime.state.state==='streaming'?runtime.activeMedia??null:null,audio_status:runtime.audioStatus,recording:recordings.current(),warning:media.warning});return}
       if(route==='/media-settings'&&req.method==='POST'){const input=await body(req),{apply,serial,...settings}=input;await media.save(mediaPatch(settings));if(apply===true){if(typeof serial!=='string')throw new Error('请选择手机');await runtime.extensions!.reconnect(serial,AbortSignal.timeout(45000))}json(res,200,{ok:true,saved:media.value,active:runtime.activeMedia??null});return}
@@ -136,7 +148,7 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
       if(route.startsWith('/download/')&&req.method==='GET'){
         const id=route.slice('/download/'.length),job=files.get(id),record=recordings.get(id),path=job?.kind==='pull'&&job.status==='completed'?job.local_path:record?.status==='saved'?record.local_path:undefined
         if(!path){json(res,404,{error:'文件不存在或尚未成功保存'});return}let info;try{info=await stat(path)}catch{json(res,410,{error:'本机文件已被移动或清理'});return}
-        const name=record?'android-recording-'+id+'.mkv':basename(job!.remote_path??job!.local_path),encoded=encodeURIComponent(name).replaceAll("'",'%27');res.writeHead(200,{'content-type':record?'video/x-matroska':'application/octet-stream','content-length':info.size,'content-disposition':`attachment; filename="android-download${record?'.mkv':''}"; filename*=UTF-8''${encoded}`,'cache-control':'private, no-store'});const stream=createReadStream(path);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return
+        const name=record?'android-recording-'+id+'.mkv':(job!.remote_path?posix.basename(job!.remote_path):basename(job!.local_path)),encoded=encodeURIComponent(name).replaceAll("'",'%27');res.writeHead(200,{'content-type':record?'video/x-matroska':'application/octet-stream','content-length':info.size,'content-disposition':`attachment; filename="android-download${record?'.mkv':''}"; filename*=UTF-8''${encoded}`,'cache-control':'private, no-store'});const stream=createReadStream(path);stream.on('error',()=>res.destroy());res.on('close',()=>stream.destroy());stream.pipe(res);return
       }
       if(route==='/task-feed'&&req.method==='GET'){json(res,200,{tasks:tasks.recent().map(task=>taskView(task,tasks,results)),warning:tasks.storageError});return}
       if(route.startsWith('/task-feed/')&&req.method==='POST'){
@@ -242,12 +254,12 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
         json(res, 200, { url: `ws://127.0.0.1:${address.port}/stream?ticket=${ticket}` }); return
       }
       json(res, 404, { error: 'Unknown Android route' })
-    } catch (error) { if(error instanceof ResultManagementError||error instanceof TaskActionError){json(res,error.status,{error:error.message});return} const diagnostic = diagnoseError(error); json(res, 500, { error: diagnostic.message, recovery: diagnostic.recovery, code: diagnostic.code }) }
+    } catch (error) { if(res.destroyed||res.writableEnded)return;if(error instanceof ResultManagementError||error instanceof TaskActionError){json(res,error.status,{error:error.message});return} const diagnostic = diagnoseError(error); json(res, 500, { error: diagnostic.message, recovery: diagnostic.recovery, code: diagnostic.code }) }
   }
-  return { handler, state: runtime.state, service, runtime, tasks, preferences, templates, results, panelState,files,media,recordings,
+  return { handler, state: runtime.state, service, runtime, tasks, preferences, templates, results, panelState,files,fileManager,media,recordings,
     async close() {
       disposed = true; tickets.clear(); for (const ws of wss.clients) ws.terminate()
-      await recordings.stop('插件关闭');await files.close()
+      await recordings.stop('插件关闭');await fileManager.close();await files.close()
       await runtime.close()
       await templates.flush()
       await panelState.flush()

@@ -1,10 +1,56 @@
 # Android Agent tools for DeepSeek Harness
 
+## 1.9.1 右上角消息提示
+
+连接、输入、文件操作、更多操作、任务和结果管理的操作反馈统一使用右上角 toast，每条均有关闭按钮。错误一直保留，必须手动关闭；普通提示 5 秒后自动消失，悬停或键盘焦点进入时暂停计时。恢复连接、切换标签或完成后续操作不会自动关闭已有错误。
+
+相同消息合并显示，持续后台故障关闭后不会在下一次轮询立即重弹；恢复后再次失败或主动重新尝试仍可产生新提示。打开原生对话框时提示仍可点击关闭，面板卸载时清理浮层和计时器。目录无法读取、作业失败记录、任务状态和可撤销操作仍保留相应业务内容。
+
+浏览器验收：`npm run test:toast-ui`。记录见 [1.9.1 消息提示验收](docs/1.9.1-消息提示验收.md)。
+
+## 1.9.0 macOS 运行依赖与 ADB 启动恢复
+
+同一个安装包现在同时携带 Windows ADB 和 macOS Universal ADB 37.0.1，自动按运行平台选择。macOS 二进制包含 Intel x64 与 Apple Silicon arm64 两个原生架构；附带原始 dylib、NOTICE 与版本文件。Android 端继续复用 scrcpy 5.0.1 服务端，无需 Homebrew、Android SDK、桌面 Java 或 FFmpeg。
+
+在 macOS 上会先校验包内文件，再按需恢复 ADB 执行权限；不使用 sudo、不自动移除隔离属性或绕过 Gatekeeper。若系统阻止运行，诊断指向系统设置中的隐私与安全性。Mac 的原生启动、签名/隔离行为和 USB 投屏仍需在 Mac 上验收，目前只完成二进制架构、资源、选择逻辑及 Windows 回归验证。不要把此包视为已完成 Mac 真机验收的稳定发布。
+
+修复同时刷新设备时重复启动 ADB 的竞争：先复用正常响应的服务，同端口启动合并；竞争失败后再次确认服务是否已由其他进程启动。没有可用服务时保留失败，不自动停止共享 ADB server。验收范围与 Mac 检查步骤见 [1.9.0 验收记录](docs/1.9.0-macOS与ADB启动验收.md)。
+
+## 1.8.0 内置 Windows 运行依赖
+
+Windows 安装包自带 ADB 37.0.1、配套 DLL 和 scrcpy 5.0.1 服务端。安装插件后连接手机、开启 USB 调试并在手机上授权即可使用，无需另外下载 Platform-Tools、配置 PATH、安装 Java、scrcpy 客户端或 FFmpeg。首次运行不下载这些运行文件。当前真机验收平台为 Windows x64；macOS 内置支持从 1.9.0 加入，其他系统/架构仍使用外部 ADB。
+
+默认 `adbPath: auto` 使用插件目录里的 ADB；显式路径和 `DSH_ANDROID_ADB_PATH` 继续作为高级覆盖配置。包内文件缺失或损坏会明确提示重装完整插件，不静默改用其他 ADB。构建与打包校验所需文件和 SHA-256，来源、版本与上游许可证一起分发。
+
+手机需要数据 USB 线和 USB 调试授权；Windows 未识别设备时仍可能需要厂商 USB 驱动。插件不自动修改手机安全设置或安装驱动。Harness 及其正常插件依赖安装流程仍是前提，本次不是独立 Harness 离线安装器。
+
+开发验收：`npm run typecheck`、`npm test`、`npm pack --pack-destination .build`，然后 `npm run test:runtime-package`。`node scripts/runtime-package-smoke.mjs --device` 可使用实际 USB 手机核对包内 ADB、Android 端 jar 执行与投屏数据。验收会清除子进程的 SDK/PATH 配置，并从带中文和空格的解压路径运行。详细结果见 [1.8.0 内置运行依赖验收](docs/1.8.0-内置运行依赖验收.md)。
+
 核心入口是 Agent 的原生工具：在 Harness 聊天里直接提出手机任务，Agent 调用 `android_*` 完成观察、操作、文件传输、安装、录制和系统控制。所有 44 项工具都进入模型可见的工具清单；文件和录制工具返回实际状态、本机路径及相关标识，不要求用户打开面板或点击按钮。面板用于观看与可选手动操作。也可通过 `dsh-android/agent` 入口在没有 WebServer、浏览器和面板的环境注册同一套工具。
 
 例如：“把电脑 D:\\Downloads\\demo.apk 安装到手机并报告实际结果”“把手机 /sdcard/Download/report.pdf 取回电脑，告诉我保存路径”“开始录屏，打开设置后返回桌面，停止录屏并告诉我录像路径”。本机文件必须有实际路径；手机审批或系统拒绝会通过工具结果如实返回。工具链独立验证：`node scripts/agent-only-smoke.mjs`；该脚本走真实 USB 与 Harness ToolRuntime，不调用模型。
 
 在 DeepSeek Harness 中增加 Android 手机面板和 44 个原生 Agent 工具，提供实时画面、应用名称识别、界面查找、点击、滑动、系统按键和中英文输入。0.5.0 增加连接诊断、参数化任务草稿、任务限额和本机操作记录。0.6.0 增加按条件重新定位并点击、界面等待、跨屏查找和列表去重读取，记录保留每屏截图。手机端使用 scrcpy 5.0.1，前端使用 WebCodecs 解码。
+
+## 1.7.1 文件管理器审查修复
+
+修复五项审查发现：重试继续使用原先选择的源版本；覆盖复制在提交临时文件前再次核对目标；上传/下载缓存与临时文件采用固定长度名称，浏览器仍保留原文件名；作业列表始终显示所有未结束任务及最近 100 条已结束记录；重启按任务时间恢复最近 1000 条历史，并额外恢复较早的未结束任务为中断状态，不自动重放。长扩展名不会再使暂存名称超长，APK 缓存仍保留安装所需后缀。
+
+源已变化时，应刷新目录后重新选择操作，点击重试不会放宽原确认范围。详细修复与回归见 [1.7.1 审查修复验收](docs/1.7.1-文件管理器审查修复验收.md)。
+
+## 1.7.0 手机文件管理器
+
+打开 Android 面板的“文件”页即可管理手机文件，不需要先建立视频连接。仍保留原有 44 项 Agent 原生工具；文件页复用同一套 ADB 文件服务，没有控制权切换。
+
+- 独立选择设备，使用快捷目录、面包屑、路径输入、前进/后退/上一级和刷新。按名称、大小或修改时间排序，筛选当前目录，显示隐藏文件，支持多选与右键菜单。窄面板自动收起侧栏，作业区默认折叠。
+- 多文件选择或拖放上传；普通文件单个或批量下载，批量下载为多个独立文件。上传、下载完成后核对 SHA-256；详情页可按需计算哈希和复制路径。下载表示发起浏览器保存，最终保存位置由浏览器决定。
+- 新建文件夹、重命名、复制、移动、批量删除，以及从手机上的 APK 发起标准安装。复制和移动使用真实目录选择器；删除前显示确切设备、路径和数量。安装受手机系统权限控制，不绕过 USB 安装限制。
+- 默认不覆盖同名目标，冲突可跳过、改名保留或明确覆盖普通文件。已有目录不会合并或覆盖。已选源文件和确认覆盖的目标变化时拒绝继续，需重新核对。
+- 后端作业依次执行，最多 100 项等待/执行/冲突作业。设备和目标在创建时固定；已接收的作业不因切换标签或刷新页面而停止。取消与失败可能留下已产生的结果，明确标为待核对；重启不会自动重放未完成操作。
+
+单文件最大 2 GiB，新名称最多 240 个 UTF-8 字节；文件系统仍可能拒绝某些名称。目录显示每页 200 项、最多读取 10000 项，达到上限会明确提示；筛选只覆盖当前目录已读取范围，分页不是原子快照。目录复制/删除沿用 1000 项、32 层、累计 2 GiB 的保护上限。只显示真实的电脑到 Harness 上传百分比，ADB 传输显示阶段和已知文件大小，不伪造进度。
+
+未暂存的电脑文件只保留在当前页面，刷新后需重新选择；已完成的下载记录仍可再次保存。第一版暂不包括文件夹上传、文件夹打包下载、文件预览和递归搜索。真机验收：`npm run test:file-manager`；浏览器时序与故障注入：`npm run test:file-manager-browser`；完整文件页与原有更多操作回归：`npm run test:files-ui`。详细任务及证据见 [1.7.0 文件管理器开发与验收](docs/1.7.0-文件管理器开发与验收.md)。
 
 ## 1.6.0 通知读取与应用等待
 
@@ -213,17 +259,25 @@
 
 安装后在 Harness 的 Plugins 页面确认 Android 插件已经启用。重新打开 Harness 后会显示 Android 面板，并连接唯一一台已授权手机；多台设备时从列表选择后点击“连接手机”。也可通过会话头部的 Android 按钮打开面板。
 
-其他电脑使用 `dsh-android-1.6.0.tgz` 安装包。需要 Harness 0.2.1-rc.2 和已安装的 Android Platform-Tools（ADB）；插件不会内置 SDK 或自动修改手机调试设置。
+其他电脑使用 `dsh-android-1.9.1.tgz` 安装包。需要兼容的 Harness 0.2.1-rc.2；Windows 与 macOS ADB 及 scrcpy 服务端已内置，不需要安装 Android SDK。手机端需开启 USB 调试并授权。macOS 的真机验收状态见 1.9.0 说明。
 
 标准安装命令：
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add C:\Downloads\dsh-android-1.6.0.tgz
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add C:\Downloads\dsh-android-1.9.1.tgz
 ```
 
 包内的 `bin/install-profile.ps1` 支持 `-PackagePath`、`-Profile`、`-DshPath`，优先使用桌面自带 CLI，显示其路径和版本；在修改前备份目标 profile 的清单、lock 与补丁文件，已有插件由 Harness 安装器保留。安装后重启目标 profile。系统 PATH 里的同名全局 CLI 可能是旧版，请确认实际版本匹配。
 
-ADB 默认自动发现：显式 `adbPath` 优先；自动模式依次使用 `DSH_ANDROID_ADB_PATH`（若设置）、PATH、`ANDROID_SDK_ROOT`、`ANDROID_HOME` 和 Windows 标准 SDK 路径。找不到时可在连接诊断中填写 adb 可执行文件完整路径。改变路径前必须断开当前连接。`dsh-android-doctor --json` 可独立检查 ADB 和 USB 授权。
+macOS 使用该 Mac 上与 Harness 配套的 `dsh` CLI 安装；先通过 `dsh --version` 确认版本匹配，下面假设该 CLI 已在 PATH 中，不要为了执行命令另装不匹配的旧版 CLI：
+
+```sh
+dsh plugin --profile desktop add "$HOME/Downloads/dsh-android-1.9.1.tgz"
+```
+
+安装后重启目标 Harness profile，连接设置保持 `adbPath: auto`。Windows 的 `install-profile.ps1` 不用于 macOS。若将来把插件直接嵌入 Mac `.app`，可执行文件应位于真实文件目录而非 ASAR，并随宿主进行正确的签名、公证和分发验证；当前交付形态仍是 Harness 用户目录中的插件包。
+
+ADB 默认自动发现：显式 `adbPath` 优先，其次是 `DSH_ANDROID_ADB_PATH`（若设置），Windows x64/x86 与 macOS Intel/Apple Silicon 自动模式使用对应包内 ADB。其他系统/架构依次查找 PATH、`ANDROID_SDK_ROOT`、`ANDROID_HOME` 与标准 SDK 路径。已有自定义配置会保留；希望改用内置版本时恢复为 `auto` 并移除环境覆盖。改变路径前必须断开当前连接。`dsh-android-doctor --json` 可独立检查包内 scrcpy、ADB 和 USB 授权，结果中的 `adb.source` 区分内置和外部来源。
 
 任务、模板和设置默认写入 `$DSH_HOME/android`（没有 DSH_HOME 时为用户目录的 `.dsh/android`），与插件安装目录分离。可通过 `dataDir` 或 `DSH_ANDROID_DATA_DIR` 指定路径。迁移自定义任务与设置时复制该目录；截图原件由 Harness 附件服务管理，迁移截图还需迁移原 Harness 附件数据。读取来自其他或上次进程的未结束记录时标记“结果待确认”，不假定任务完成。
 
@@ -279,7 +333,7 @@ node scripts/browser-smoke.mjs http://127.0.0.1:实际端口
 
 人工控制测试使用 `tests/control-fixture.html`，通过 ADB reverse 让手机浏览器打开本机预览服务的 `/fixture`，再执行 `node scripts/control-smoke.mjs <预览地址>`。测试读取页面回传的点击计数、输入内容、拖动和滚动状态确认真实效果。系统按键验证用 `npm run test:keys`，会短暂打开系统设置及最近任务，最后返回手机主页。
 
-当前通过 198 组自动化测试，覆盖结果保存与截图绑定、跨对话依据拒绝、重启恢复、缺失字段降级、CSV/Markdown 转义、ZIP 内容与解压校验、结果接口及原有工具回归；增加 ADB 发现、故障分类、任务计数与时间限额、不可通过释放绕过限额、日志持久化与输入正文省略、截图关联、模板持久化、管理接口访问校验、模型处理期间取消的识别与安装器旧版 CLI 拒绝。新文件工具覆盖路径边界、错误分类、哈希中变化、旧产物排除、等待取消、符号链接删除边界、后台任务生命周期、重启不确定性、只读 URI 授权与用户切换，以及实际 Harness 工具注册与调度。
+当前通过 225 组自动化测试，覆盖结果保存与截图绑定、跨对话依据拒绝、重启恢复、缺失字段降级、CSV/Markdown 转义、ZIP 内容与解压校验、结果接口及原有工具回归；增加 ADB 发现、故障分类、任务计数与时间限额、不可通过释放绕过限额、日志持久化与输入正文省略、截图关联、模板持久化、管理接口访问校验、模型处理期间取消的识别与安装器旧版 CLI 拒绝。新文件工具覆盖路径边界、错误分类、哈希中变化、旧产物排除、等待取消、符号链接删除边界、后台任务生命周期、重启不确定性、只读 URI 授权与用户切换，以及实际 Harness 工具注册与调度。
 
 0.4.0 已用真实工具调度链完成真机搜索验收：按名称打开“设置”，输入“电池”读取“省电与电池”“电池状态”等结果，替换输入为“显示”并核对结果；不存在的目标只观察指定的 2 次，最后返回手机桌面。此轮没有代发用户的桌面聊天任务。
 
@@ -300,6 +354,8 @@ Host 配置支持 `adbPath`、`adbPort`、`maxSize`、`maxFps`、`videoBitRate` 
 手机切换方向会产生新的编码配置，前端根据编码配置更新画面。面板关闭仅结束观看通道；插件停用或点击“断开”才结束设备连接。解码积压超过上限时停止本次观看连接，并提示重新连接。
 
 ## 第三方资源
+
+ADB 来自 [Google 官方 Platform-Tools](https://developer.android.com/tools/releases/platform-tools)，固定版本 37.0.1。Windows 文件位于 `vendor/adb/windows`，macOS Universal 文件位于 `vendor/adb/macos`，附带原始库、`NOTICE.txt` 和 `source.properties`；归档与各文件 SHA-256 记录于 `vendor/runtime-manifest.json`。升级流程见 [vendor/README.md](vendor/README.md)。
 
 `vendor/scrcpy-server-v5.0.1` 来自官方发布：
 

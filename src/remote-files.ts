@@ -8,7 +8,7 @@ import {quoteAndroidArg as quote} from './android-shell.js'
 
 const MAX_BYTES=2*1024**3,MAX_ENTRIES=1000
 export interface RemoteStat{status:'found'|'not_found';exists:boolean;serial:string;path:string;type?:'file'|'directory'|'symlink'|'special';bytes?:number|string;mtime_seconds?:string;modified_at?:string|null;fingerprint?:string;mode?:string;sha256?:string}
-export interface ManageFileOptions{action:'mkdir'|'copy'|'move'|'rename'|'delete';path:string;destination?:string;recursive?:boolean;overwrite?:boolean}
+export interface ManageFileOptions{action:'mkdir'|'copy'|'move'|'rename'|'delete';path:string;destination?:string;recursive?:boolean;overwrite?:boolean;expected_source_version?:string;expected_destination_version?:string}
 export interface WaitFileOptions{path:string;timeout_ms?:number;stable_ms?:number;poll_ms?:number;min_bytes?:number;different_from?:string;modified_after?:string}
 export function missingFile(error:unknown){return /^(?:ENOENT|No such file or directory)$/i.test(String((error as Error)?.message??error))}
 function safeNumber(value:bigint){return value<=BigInt(Number.MAX_SAFE_INTEGER)?Number(value):String(value)}
@@ -62,6 +62,7 @@ export class RemoteFiles{
     if(input.overwrite&& !['copy','move','rename'].includes(input.action))throw new Error('overwrite 仅适用于复制、移动和重命名')
     return this.exclusive(serial,signal,async()=>{
       const path=await this.target(serial,input.path,input.action==='mkdir'&&input.recursive===true,signal),source=await this.stat(serial,path,false,signal)
+      if(input.expected_source_version&&source.exists&&`${source.type}:${source.bytes}:${source.mtime_seconds}`!==input.expected_source_version)throw new Error('源文件在选择后变化，请刷新目录')
       if(input.action==='mkdir'){if(source.exists){if(source.type!=='directory')throw new Error('该路径已存在且不是目录');return{status:'unchanged',serial,path,action:input.action}}await this.shell(serial,['mkdir',...(input.recursive?['-p']:[]),'--',path],signal);return{status:'completed',serial,path,action:input.action,result:await this.stat(serial,path,false,signal)}}
       if(!source.exists)throw new Error('源文件或目录不存在')
       if(input.action==='delete'){
@@ -75,6 +76,7 @@ export class RemoteFiles{
       if(input.action==='rename'&&posix.dirname(path)!==posix.dirname(destination))throw new Error('rename 只改变同一目录中的名称，跨目录请用 move')
       if(source.type==='directory'&&destination.startsWith(path+'/'))throw new Error('不能把目录放入自身内部')
       const existing=await this.stat(serial,destination,false,signal)
+      if(input.expected_destination_version&&`${existing.type}:${existing.bytes}:${existing.mtime_seconds}`!==input.expected_destination_version)throw new Error('目标在确认覆盖后变化，请重新核对')
       if(existing.exists&&!input.overwrite)throw new Error('目标已存在，需要明确 overwrite=true 才可覆盖')
       if(existing.type==='directory')throw new Error('不覆盖已有目录；请指定一个不存在的完整目标路径')
       if(existing.exists&&existing.type!==source.type)throw new Error('源和已有目标的文件类型不同，未覆盖')
@@ -89,20 +91,21 @@ export class RemoteFiles{
           await this.shell(serial,['cp',...(source.type==='directory'?['-R']:[]),'--',path,temporary],signal,120000)
           let hash:string|undefined
           if(source.type==='file'){hash=await this.hash(serial,path,signal);if(await this.hash(serial,temporary,signal)!==hash)throw new Error('复制哈希不一致，源文件可能正在变化')}
-          await this.commit(serial,temporary,destination,input.overwrite===true,signal)
+          await this.commit(serial,temporary,destination,input.overwrite===true,signal,input.expected_destination_version)
           return{status:'completed',serial,path,destination,action:input.action,result:{...await this.stat(serial,destination,false,signal),...(hash?{sha256:hash}:{})}}
         }finally{await this.device.runShell(serial,['rm','-rf','--',temporary],AbortSignal.timeout(5000)).catch(()=>{})}
       }
       if(source.type==='directory')await this.inspectTree(serial,path,true,signal)
-      await this.commit(serial,path,destination,input.overwrite===true,signal)
+      await this.commit(serial,path,destination,input.overwrite===true,signal,input.expected_destination_version)
       return{status:'completed',serial,path,destination,action:input.action,result:await this.stat(serial,destination,false,signal),guidance:'跨文件系统移动不保证原子性；发生取消或错误后请查询源和目标，再决定是否重试。'}
     })
   }
-  private async commit(serial:string,source:string,destination:string,overwrite:boolean,signal:AbortSignal){
+  private async commit(serial:string,source:string,destination:string,overwrite:boolean,signal:AbortSignal,expectedVersion?:string){
+    if(expectedVersion){const target=await this.stat(serial,destination,false,signal);if(`${target.type}:${target.bytes}:${target.mtime_seconds}`!==expectedVersion)throw new Error('目标在确认覆盖后变化，请重新核对')}
     const command=`mv ${overwrite?'-f':'-n'} -T -- ${quote(source)} ${quote(destination)}; status=$?; if [ "$status" -ne 0 ]; then exit "$status"; fi; if [ -e ${quote(source)} ] || [ -L ${quote(source)} ]; then echo '目标已存在或移动没有完成' >&2; exit 43; fi`
     await this.shell(serial,['sh','-c',command],signal,120000)
   }
-  publishTransfer(serial:string,source:string,destination:string,overwrite:boolean,signal:AbortSignal){return this.exclusive(serial,signal,()=>this.commit(serial,source,destination,overwrite,signal))}
+  publishTransfer(serial:string,source:string,destination:string,overwrite:boolean,signal:AbortSignal,expectedVersion?:string){return this.exclusive(serial,signal,()=>this.commit(serial,source,destination,overwrite,signal,expectedVersion))}
   async close(){this.shutdown.abort(new Error('文件服务已关闭'));await Promise.allSettled(this.tails.values())}
   async wait(serial:string,input:WaitFileOptions,signal:AbortSignal){
     const path=remotePath(input.path),timeout=input.timeout_ms??30000,stable=input.stable_ms??1500,poll=input.poll_ms??500,min=input.min_bytes??1

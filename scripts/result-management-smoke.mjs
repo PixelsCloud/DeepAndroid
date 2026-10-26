@@ -32,12 +32,12 @@ async function count(n){await page.locator('[data-results-count]').filter({hasTe
 async function open(){await page.goto(origin());await page.getByRole('tab',{name:'结果',exact:true}).click()}
 try{
  await open();await count(25);assert.equal(await page.locator('.result-list button').count(),20);await heading('结果24').waitFor()
- await button('重命名').click();await page.getByRole('textbox',{name:'结果标题',exact:true}).fill('   ');await button('保存名称').click();await page.locator('[data-result-rename-error]').filter({hasText:'标题须为'}).waitFor()
+ await button('重命名').click();await page.getByRole('textbox',{name:'结果标题',exact:true}).fill('   ');await button('保存名称').click();await page.locator('.android-toast-message').filter({hasText:'标题须为'}).waitFor();await page.getByRole('button',{name:'关闭错误提示',exact:true}).click()
  await page.getByRole('textbox',{name:'结果标题',exact:true}).fill('我的热榜');await button('保存名称').click();await heading('我的热榜').waitFor();assert.equal(await page.locator('.result-table tbody tr').count(),1)
  checks.push('rename edits only the title and preserves table data')
  await search().fill('我的热榜');await count(1);await heading('我的热榜').waitFor();await search().fill('内容07');await count(1);await heading('结果07').waitFor()
  await button('清空筛选').click();await count(25);await page.getByLabel('开始日期',{exact:true}).fill('2026-10-23');await page.getByLabel('结束日期',{exact:true}).fill('2026-10-23');await count(5);assert.equal(await page.locator('.result-list button').count(),5)
- await page.getByLabel('开始日期',{exact:true}).fill('2026-10-25');await page.locator('[data-results-error]').filter({hasText:'开始日期不能晚于结束日期'}).waitFor();assert.equal(await page.locator('.result-detail h2').count(),0)
+ await page.getByLabel('开始日期',{exact:true}).fill('2026-10-25');await page.locator('.android-toast-message').filter({hasText:'开始日期不能晚于结束日期'}).waitFor();await page.getByRole('button',{name:'关闭错误提示',exact:true}).click();assert.equal(await page.locator('.result-detail h2').count(),0)
  await button('清空筛选').click();await count(25);await button('下一页').click();await page.locator('[data-results-page]').filter({hasText:'21–25 / 25'}).waitFor();assert.equal(await page.locator('.result-list button').count(),5)
  checks.push('literal full-content search, local calendar dates, invalid-range feedback and pagination work')
  await button('删除').click();await count(24);await button('撤销').click();await count(25)
@@ -51,7 +51,7 @@ try{
  await scope().selectOption('active');await search().fill('我的热榜');await count(1);await heading('我的热榜').waitFor();await button('截图 1').click();await page.waitForFunction(()=>document.querySelector('.result-evidence img')?.naturalWidth===1);await button('关闭截图').click()
  checks.push('recent deletion and renaming survive restart; restore retains screenshot evidence')
  await page.route('**/x-android/results?*',async route=>{if(new URL(route.request().url()).searchParams.get('query')==='内容01'){await new Promise(resolve=>setTimeout(resolve,700));await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'旧查询失败，应被忽略'})});return}await route.continue()})
- await search().fill('内容01');await page.waitForTimeout(350);await search().fill('内容02');await heading('结果02').waitFor();await page.waitForTimeout(900);assert.equal(await heading('结果02').count(),1);assert.equal(await page.locator('[data-results-error]').isVisible(),false);await page.unroute('**/x-android/results?*')
+ await search().fill('内容01');await page.waitForTimeout(350);await search().fill('内容02');await heading('结果02').waitFor();await page.waitForTimeout(900);assert.equal(await heading('结果02').count(),1);assert.equal(await page.locator('.android-toast[data-kind=error]').count(),0);await page.unroute('**/x-android/results?*')
  checks.push('a delayed prior search cannot replace the latest query result')
  await button('清空筛选').click();await count(25);await page.screenshot({path:'.build/evidence/result-management-desktop.png'});await page.setViewportSize({width:360,height:900});await page.screenshot({path:'.build/evidence/result-management-mobile.png'});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false)
  assert.deepEqual(errors,[]);await writeFile('.build/evidence/result-management-smoke.json',JSON.stringify({pass:true,kind:'actual management UI + isolated synthetic reports + restart; no model invocation or modification of user reports',directory,checks,errors},null,2));console.log(JSON.stringify({pass:true,checks,errors},null,2))

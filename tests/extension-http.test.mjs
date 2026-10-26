@@ -1,7 +1,7 @@
 import{test}from'node:test'
 import assert from'node:assert/strict'
 import{createServer}from'node:http'
-import{mkdir,mkdtemp,readFile}from'node:fs/promises'
+import{mkdir,mkdtemp,readFile,writeFile}from'node:fs/promises'
 import{join}from'node:path'
 import{createPanel}from'../dist/host.js'
 test('extension endpoints fence writes/downloads, persist media without a phone, and accept bounded binary staging without arbitrary host paths',async()=>{
@@ -15,4 +15,7 @@ test('extension endpoints fence writes/downloads, persist media without a phone,
   assert.equal((await request('/file-jobs',{kind:'push',serial:'phone',local_path:'C:/private.txt'})).status,500);assert.equal((await request('/recordings',{action:'start',serial:'phone',max_seconds:0})).status,500);assert.equal(panel.state.state,'idle')
   assert.equal((await request('/download-ticket',{id:'invented'})).status,500);assert.equal((await fetch(origin+'/x-android/download/invented?ticket=invented')).status,403);assert.equal((await request('/download/invented')).status,404)
  }finally{await panel.close();await new Promise(r=>server.close(r))}
+})
+test('browser downloads preserve the original long UTF-8 filename independently of the local cache name',async()=>{
+ await mkdir('.build/tests',{recursive:true});const directory=await mkdtemp(join(process.cwd(),'.build/tests/long-download-http-')),panel=await createPanel({dataDir:directory}),server=createServer(panel.handler);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin='http://127.0.0.1:'+server.address().port,payload=Buffer.from('exact download contents');panel.files.perform=async(job)=>{await writeFile(job.local_path,payload);job.bytes=payload.length};try{for(const name of ['长文件名-'+ 'a'.repeat(210)+'.txt',"中文 ' $ &.txt",'literal\\name.txt']){const task=await panel.files.start('pull','phone',{remote_path:'/sdcard/Download/'+name},AbortSignal.timeout(10000)),job=await task.promise;assert.equal(job.status,'completed',job.error);const response=await fetch(origin+'/x-android/download-ticket',{method:'POST',headers:{'x-android-client':'1','content-type':'application/json'},body:JSON.stringify({id:job.id})});assert.equal(response.status,200);const ticket=await response.json(),download=await fetch(origin+ticket.url);assert.equal(download.status,200);assert.equal(download.headers.get('content-disposition').split("filename*=UTF-8''")[1],encodeURIComponent(name).replaceAll("'",'%27'));assert.deepEqual(Buffer.from(await download.arrayBuffer()),payload)}}finally{await panel.close();await new Promise(resolve=>server.close(resolve))}
 })
