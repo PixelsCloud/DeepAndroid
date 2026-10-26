@@ -1,0 +1,86 @@
+{
+  "name": "dsh-android",
+  "version": "1.6.0",
+  "private": true,
+  "type": "module",
+  "description": "Native Android agent tools and USB screen panel for DeepSeek Harness",
+  "main": "dist/host.js",
+  "bin": {
+    "dsh-android-doctor": "./bin/doctor.mjs"
+  },
+  "exports": {
+    ".": "./dist/host.js",
+    "./client": "./dist/client.js",
+    "./agent": "./dist/agent.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "vendor",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "test:device": "node scripts/device-smoke.mjs",
+    "test:controls": "node scripts/control-smoke.mjs",
+    "test:keys": "node scripts/system-keys-smoke.mjs",
+    "test:native": "node scripts/native-device-smoke.mjs",
+    "test:recovery": "node scripts/recovery-smoke.mjs",
+    "test:search": "node scripts/search-smoke.mjs",
+    "test:management": "node scripts/management-smoke.mjs",
+    "test:navigation": "node scripts/navigation-smoke.mjs",
+    "test:layout": "node scripts/layout-smoke.mjs",
+    "test:results": "node scripts/results-smoke.mjs",
+    "test:result-management": "node scripts/result-management-smoke.mjs",
+    "test:restoration": "node scripts/restoration-smoke.mjs",
+    "test:clock": "node scripts/clock-smoke.mjs",
+    "test:task-flow": "node scripts/task-flow-smoke.mjs",
+    "test:task-ui": "node scripts/task-ui-smoke.mjs",
+    "test:detail-reading": "node scripts/detail-reading-smoke.mjs",
+    "test:extensions": "node scripts/extensions-smoke.mjs",
+    "test:files-ui": "node scripts/files-ui-smoke.mjs",
+    "test:agent-controls": "node scripts/agent-controls-smoke.mjs",
+    "test:agent-only": "node scripts/agent-only-smoke.mjs",
+    "test:agent-files": "node scripts/agent-files-smoke.mjs",
+    "test:agent-library": "node scripts/agent-library-smoke.mjs",
+    "test:agent-events": "node scripts/agent-events-smoke.mjs"
+  },
+  "dependencies": {
+    "@yume-chan/adb": "3.0.0-beta.4",
+    "@yume-chan/adb-scrcpy": "3.0.0-beta.4",
+    "@yume-chan/adb-server-node-tcp": "3.0.0-beta.4",
+    "@yume-chan/scrcpy-decoder-webcodecs": "3.0.0-beta.4",
+    "@yume-chan/stream-extra": "3.0.0-beta.4",
+    "fast-xml-parser": "5.11.2",
+    "ws": "8.22.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@types/node": "26.6.5",
+    "@types/ws": "8.18.2",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,17 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><title>Android 控制验收</title>
+<style>body{margin:0;padding:12px;background:#102028;color:#e8f0f3;font:15px/1.5 system-ui}h2{margin:0 0 4px;font-size:20px}button,textarea{box-sizing:border-box;font:inherit;color:inherit;background:#234450;border:1px solid #638b93;border-radius:8px;padding:10px}button{touch-action:manipulation}textarea{width:100%;height:72px;margin:8px 0}#drag{height:110px;border-radius:8px;background:#24647a;touch-action:none;user-select:none;display:flex;align-items:center;justify-content:center}#list{height:180px;overflow:auto;margin-top:8px;touch-action:pan-y;border:1px solid #638b93;border-radius:8px}#list div{padding:10px;border-bottom:1px solid #638b9344}#status{font-size:12px;min-height:36px}.row{display:flex;gap:8px}.row button{flex:1}#drag:active{background:#277954}</style>
+<h2>Android 手机控制验收</h2><div id="status" aria-live="polite"></div>
+<div class="row"><button id="tap" aria-label="点击测试">点击测试</button><button id="hold" aria-label="长按测试">长按测试</button></div>
+<textarea id="text" aria-label="测试文字输入" placeholder="点击这里，再从电脑输入中英文"></textarea>
+<div id="drag" role="button" aria-label="拖动测试区域">在这里按住并拖动</div>
+<div id="list" role="region" aria-label="滚动测试列表"></div>
+<script>
+const state={clicks:0,longPresses:0,dragMoves:0,ups:0,pressed:false,scrollY:0,text:'',keyEvents:[],lastTouch:null};
+const status=document.getElementById('status');let longTimer,postTimer;
+function save(){status.textContent=`点击 ${state.clicks} · 长按 ${state.longPresses} · 拖动 ${state.dragMoves} · 释放 ${state.ups} · 滚动 ${state.scrollY}`;state.boxes={};for(const id of ['tap','hold','text','drag','list']){const b=document.getElementById(id).getBoundingClientRect();state.boxes[id]={x:b.x,y:b.y,width:b.width,height:b.height}}state.pixelRatio=devicePixelRatio;state.viewport={width:innerWidth,height:innerHeight};clearTimeout(postTimer);postTimer=setTimeout(()=>fetch('/fixture-state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(state)}),20)}
+document.getElementById('tap').onclick=()=>{state.clicks++;save()};
+const hold=document.getElementById('hold');let heldAt=0;hold.style.touchAction='none';hold.onpointerdown=e=>{e.preventDefault();heldAt=performance.now();longTimer=setTimeout(()=>{state.longPresses++;save()},400)};hold.onpointerup=hold.onpointercancel=()=>{clearTimeout(longTimer);state.holdDuration=Math.round(performance.now()-heldAt);save()};hold.oncontextmenu=e=>e.preventDefault();
+const input=document.getElementById('text');input.oninput=()=>{state.text=input.value;save()};input.onkeydown=e=>{state.keyEvents.push(e.key);save()};
+const drag=document.getElementById('drag');drag.onpointerdown=e=>{drag.setPointerCapture(e.pointerId);state.pressed=true;state.lastTouch={x:e.clientX,y:e.clientY};save()};drag.onpointermove=e=>{if(!state.pressed)return;state.dragMoves++;state.lastTouch={x:e.clientX,y:e.clientY};save()};drag.onpointerup=drag.onpointercancel=e=>{state.pressed=false;state.ups++;save()};
+const list=document.getElementById('list');for(let i=1;i<=60;i++){const row=document.createElement('div');row.textContent='列表条目 '+i;list.appendChild(row)}list.onscroll=()=>{state.scrollY=Math.round(list.scrollTop);save()};window.addEventListener('resize',save);save();
+</script></html>

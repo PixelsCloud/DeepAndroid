@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Android Agent 手势验收</title>
+<style>html,body{margin:0;background:#11202a;color:#e3f4f0;font:16px system-ui}header{padding:12px}h1{font-size:20px;margin:0 0 8px}input{box-sizing:border-box;width:100%;font:inherit;padding:10px}#zone{height:60vh;margin:12px;background:#174651;border:2px solid #63bfa1;border-radius:12px;touch-action:none;display:grid;place-items:center;overflow:hidden}#box{width:110px;height:90px;background:#c9a660;color:#12242c;display:grid;place-items:center;pointer-events:none}pre{font-size:12px;white-space:pre-wrap;padding:8px}</style>
+<header><h1>Android Agent 手势验收</h1><input aria-label="测试键盘可见性" placeholder="测试键盘可见性"></header>
+<div id="zone" role="img" aria-label="手势验收区域" tabindex="0"><div id="box">双指缩放 / 旋转</div></div><pre id="status">等待工具发送真实触摸事件</pre>
+<script>
+ const zone=document.querySelector('#zone'),box=document.querySelector('#box'),status=document.querySelector('#status');let contacts=0,session=null,completed=[],count=0,lastPost=0,queue=Promise.resolve()
+ function report(force=false){if(!force&&performance.now()-lastPost<50)return;lastPost=performance.now();const value={ready:true,contacts,completed_count:count,last_completed:completed.at(-1)??null,session,viewport:{width:innerWidth,height:innerHeight,dpr:devicePixelRatio},input:{left:document.querySelector('input').getBoundingClientRect().left,top:document.querySelector('input').getBoundingClientRect().top,width:document.querySelector('input').getBoundingClientRect().width,height:document.querySelector('input').getBoundingClientRect().height},zone:{left:zone.getBoundingClientRect().left,top:zone.getBoundingClientRect().top,width:zone.getBoundingClientRect().width,height:zone.getBoundingClientRect().height}};status.textContent=JSON.stringify(value,null,2);queue=queue.then(()=>fetch(location.pathname+'/events',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(value)})).catch(()=>{})}
+ for(const type of ['touchstart','touchmove','touchend','touchcancel'])zone.addEventListener(type,event=>{
+  event.preventDefault();const touches=[...event.touches];if(contacts===0&&touches.length){session={max_contacts:0,moves:0,scale:1,angle:0,dx:0,dy:0,baseline:null,started_at:performance.now()}}
+  contacts=touches.length;if(!session)return;session.max_contacts=Math.max(session.max_contacts,contacts);if(type==='touchmove')session.moves++
+  if(touches.length===2){const a=touches[0],b=touches[1],geometry={x:(a.clientX+b.clientX)/2,y:(a.clientY+b.clientY)/2,distance:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),angle:Math.atan2(b.clientY-a.clientY,b.clientX-a.clientX)*180/Math.PI};session.baseline??=geometry;session.scale=geometry.distance/session.baseline.distance;session.angle=geometry.angle-session.baseline.angle;session.dx=geometry.x-session.baseline.x;session.dy=geometry.y-session.baseline.y;box.style.transform=`translate(${session.dx}px,${session.dy}px) rotate(${session.angle}deg) scale(${session.scale})`}
+  if(contacts===0){count++;session.ended_at=performance.now();session.cancelled=type==='touchcancel';completed.push({...session});if(completed.length>20)completed.shift();session=null}
+  report(type!=='touchmove')
+ },{passive:false})
+ addEventListener('resize',()=>report(true));report(true)
+</script>
