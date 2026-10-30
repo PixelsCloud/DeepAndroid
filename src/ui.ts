@@ -9,6 +9,7 @@ import { mountFiles } from './browser-files.js'
 import { mountExtra } from './browser-extra.js'
 import { PhoneAudio } from './browser-audio.js'
 import { mountToasts, notify, resetNotice } from './browser-toast.js'
+import { mountDesign } from './browser-design.js'
 import { DEFAULT_PANEL_STATE, type PanelState } from './panel-state-format.js'
 
 interface DeviceInfo { serial: string; state: string; model: string }
@@ -100,13 +101,14 @@ export function mountPanel(root: HTMLElement): () => void {
   const audio=new PhoneAudio()
   const fileView=mountFiles(get<HTMLElement>('.android-files-root'),()=>select.value)
   const extra=mountExtra(get<HTMLElement>('.android-panel'),()=>select.value,audio)
-  get<HTMLButtonElement>('[data-action=more]').onclick=()=>{controls.release();extra.open()}
+  get<HTMLButtonElement>('[data-action=more]').onclick=()=>{controls.release()}
   const disposeManagement = mountManagement(get<HTMLElement>('.android-management-root'))
   const resultView = mountResults(get<HTMLElement>('.android-results-root'))
-  const disposeTasks=mountTasks(get<HTMLElement>('.android-task-root'),async id=>{await resultView.open(id);if(!disposed)showPanel('results')})
+  const disposeTasks=mountTasks(get<HTMLElement>('.android-task-root'),async id=>{if(!disposed){showPanel('results');await resultView.open(id)}})
   let debugOpened = false
   const panelTabs = [...root.querySelectorAll<HTMLButtonElement>('[data-panel-tab]')]
   function showPanel(name: string,save=true) {
+    extra.close()
     if(save){interacted=true;void persist({panel:name as PanelState['panel']})}
     controls.release(); resultView.show(name==='results');fileView.show(name==='files')
     for (const panel of root.querySelectorAll<HTMLElement>('[data-panel]')) panel.hidden = panel.dataset.panel !== name
@@ -255,8 +257,9 @@ export function mountPanel(root: HTMLElement): () => void {
     meta.textContent = `${decoder.width} × ${decoder.height} · 已显示 ${frames} 帧 · ${(received / 1024).toFixed(0)} KB · ${decoder.type === 'hardware' ? '硬件解码' : '软件解码'}`
   }, 500)
   stateReady=api<{state:PanelState}>('/panel-state').then(value=>{if(disposed)return;uiState={...DEFAULT_PANEL_STATE,...value.state,...pendingState};if(!interacted)showPanel(uiState.panel,false)}).catch(error=>console.warn('[dsh-android] panel restoration:',String(error)))
+  const disposeDesign=mountDesign(root)
   void stateReady.then(()=>{if(!disposed)void refresh()})
-  return () => { disposed = true;toasts.dispose();desiredConnection=false;clearTimeout(retryTimer);clearTimeout(stableTimer); generation++; clearInterval(interval); clearVideo(); controls.dispose(); disposeManagement(); resultView.dispose();disposeTasks();fileView.dispose();extra.dispose();audio.dispose(); root.replaceChildren() }
+  return () => { disposed = true;disposeDesign();toasts.dispose();desiredConnection=false;clearTimeout(retryTimer);clearTimeout(stableTimer); generation++; clearInterval(interval); clearVideo(); controls.dispose(); disposeManagement(); resultView.dispose();disposeTasks();fileView.dispose();extra.dispose();audio.dispose(); root.replaceChildren() }
 }
 
 interface ReactLike {

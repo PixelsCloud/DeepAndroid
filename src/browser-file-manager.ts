@@ -1,6 +1,8 @@
 import { extraApi, uploadFile, downloadFile } from './browser-file-api.js'
 import { notify, resetNotice } from './browser-toast.js'
 import { fileLayout, fileIcon } from './browser-file-layout.js'
+import {previewableImage} from './image-preview.js'
+import {openImagePreview} from './browser-image-preview.js'
 import {
   createDialogs,
   element as el,
@@ -233,8 +235,10 @@ export function mountFileManager(
           'fm-entry-sub',
         )
       name.title = entry.name
+      if (previewableImage(entry)) name.title += ' · 点击预览'
       name.onclick = () => {
         if (entry.type === 'directory') run(() => browse(entry.path))
+        else if (previewableImage(entry)) run(() => openImagePreview(dialogs, serial, entry))
         else {
           selected.clear()
           selected.add(entry.path)
@@ -243,7 +247,7 @@ export function mountFileManager(
         }
       }
       name.ondblclick = () => {
-        if (entry.type !== 'directory') run(() => details(entry))
+        if (entry.type !== 'directory' && !previewableImage(entry)) run(() => details(entry))
       }
       label.append(name, sub)
       wrap.append(icon, label)
@@ -288,6 +292,7 @@ export function mountFileManager(
         } else if (event.key === 'Enter') {
           event.preventDefault()
           if (entry.type === 'directory') run(() => browse(entry.path))
+          else if (previewableImage(entry)) run(() => openImagePreview(dialogs, serial, entry))
           else run(() => details(entry))
         }
       }
@@ -1230,6 +1235,7 @@ export function mountFileManager(
   }
   device.onchange = () =>
     run(async () => {
+      dialogs.dispose()
       request?.abort()
       const ownSerial = device.value
       serial = ownSerial
@@ -1320,6 +1326,7 @@ export function mountFileManager(
   return {
     show(value: boolean) {
       visible = value
+      if (!value) dialogs.dispose()
       if (value) {
         run(start)
         if (initialized && serial && !loading) run(() => browse(path, false))

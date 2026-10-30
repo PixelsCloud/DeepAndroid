@@ -14,6 +14,7 @@ export function taskView(task:TaskRecord,ledger:TaskLedger,results:ResultStore){
  return {id:task.id,sessionId:task.sessionId,status:task.status,phase,canStop:control.canStop,startedAt:task.startedAt,endedAt:task.endedAt??null,title:reports.find(report=>report.origin==='agent')?.title??(appName?`${appName} · 手机任务`:'手机任务'),app:appName,lastStep:last?names[last.tool]??'手机操作':null,calls:task.calls,returned:task.operations.filter(operation=>operation.status==='ok').length,errors:task.operations.filter(operation=>operation.status==='error').length,reason:task.reason??null,progress,problems:[...new Set(problems)].slice(-3),results:reports,screenshot:screenshot?(screenshot.pages?.length?`${screenshot.id}~${screenshot.pages.at(-1)!.page}`:screenshot.id):null}
 }
 export type TaskView=ReturnType<typeof taskView>
+export function taskOperationName(tool:string){return names[tool]??tool}
 
 /** A draft is reviewed and sent by the user in the original conversation. Device text stays quoted data. */
 export function continuationDraft(task:TaskRecord,ledger:TaskLedger,results:ResultStore){

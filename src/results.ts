@@ -26,7 +26,7 @@ export class ResultStore {
         const checked = validateResult(value)
         if ([value.updated_at,value.deleted_at].some(date=>date!==undefined&&(typeof date!=='string'||!Number.isFinite(Date.parse(date)))) || (value.input_hash!==undefined&&(typeof value.input_hash!=='string'||!/^[a-f0-9]{64}$/.test(value.input_hash)))) throw new Error('invalid result metadata')
         const used = new Set([...checked.observation_ids,...checked.rows.flatMap(row=>row.observation_ids)])
-        if (value.sources.some(source=>!used.has(source.observation_id) || typeof source.captured_at !== 'string' || typeof source.serial !== 'string' || !source.screenshot || typeof source.screenshot.attachmentId !== 'string' || source.screenshot.mediaType !== 'image/png') || [...used].some(id=>!value.sources.some(source=>source.observation_id===id))) throw new Error('invalid evidence')
+        if (value.sources.some(source=>!used.has(source.observation_id) || typeof source.captured_at !== 'string' || typeof source.serial !== 'string' || !source.screenshot || typeof source.screenshot.attachmentId !== 'string' || !['image/png','image/webp'].includes(source.screenshot.mediaType)) || [...used].some(id=>!value.sources.some(source=>source.observation_id===id))) throw new Error('invalid evidence')
         this.records.push({...value,...checked})
       } catch { this.warning = '部分结果文件无法读取，其他结果仍可查看' }
     }

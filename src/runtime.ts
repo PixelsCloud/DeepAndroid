@@ -19,6 +19,7 @@ import {queryMedia,validateMediaQuery,type MediaQuery} from './media-library.js'
 import {pickFile,validatePickFile,type PickFileOptions} from './file-picker.js'
 import {validateNotificationQuery,type NotificationQuery} from './notifications.js'
 import {waitApp,waitNotification,validateWaitApp,validateWaitNotification,type WaitAppOptions,type WaitNotificationOptions} from './event-waits.js'
+import { validateObserve, validateAfterAction, validateImageWait, validateRegion, transformScreen, decodeScreen, imageDifference, type ObserveOptions, type AfterActionOptions, type ImageWaitOptions } from './screen-image.js'
 
 export interface AndroidBackend {
   notifications?(serial:string,query:NotificationQuery,signal:AbortSignal):ReturnType<DeviceService['notifications']>
@@ -212,12 +213,12 @@ export class AndroidRuntime {
       return{...file,...await this.backend.presentFile(serial,action,file.content_uri,file.mime_type,targetPackage,file.user_id,operationSignal)}
     })
   }
-  async gesture(session:string,id:string,options:GestureOptions,signal:AbortSignal){return this.exclusive(session,signal,'手机手势：'+options.kind,async(video,serial,operationSignal)=>{
+  async gesture(session:string,id:string,options:GestureOptions,signal:AbortSignal,after:AfterActionOptions={}){validateAfterAction(after);return this.exclusive(session,signal,'手机手势：'+options.kind,async(video,serial,operationSignal)=>{
     const observation=this.observed(session,id,video),frames=planGesture(options,observation.width,observation.height).map(frame=>({...frame,points:frame.points.map(p=>this.location(observation,video,p.x,p.y))}))
     this.invalidate();const start=Date.now()
     try{for(const frame of frames){operationSignal.throwIfAborted();const wait=frame.at_ms-(Date.now()-start);if(wait>0)await delay(wait,undefined,{signal:operationSignal});operationSignal.throwIfAborted();await video.input.gestureFrame(frame.points)}}
     finally{await video.input.send({kind:'release'}).catch(()=>{})}
-    operationSignal.throwIfAborted();return{status:'sent',serial,kind:options.kind,contacts:options.kind==='double_tap'?1:2,duration_ms:frames.at(-1)!.at_ms,verify_with:'android_observe',guidance:'手势只发送一次；应用可能不支持该手势。请用新的观察验证实际效果，不要直接重复。'}
+    operationSignal.throwIfAborted();return this.afterAction(session,video,serial,operationSignal,{status:'sent',serial,kind:options.kind,contacts:options.kind==='double_tap'?1:2,duration_ms:frames.at(-1)!.at_ms,verify_with:'android_observe',guidance:'手势只发送一次；应用可能不支持该手势。请用新的观察验证实际效果，不要直接重复。'},after)
   })}
   async clipboard(session:string,action:'get'|'set',text:string|undefined,signal:AbortSignal){return this.exclusive(session,signal,action==='get'?'读取手机剪贴板':'写入手机剪贴板',async video=>{
     if(action==='get'){if(!video.getClipboard)throw new Error('当前后端不支持剪贴板读取');return{status:'read',text:await video.getClipboard()}}
@@ -274,13 +275,14 @@ export class AndroidRuntime {
     this.tail = result.then(() => {},() => {})
     return result
   }
-  async observe(session: string, signal: AbortSignal): Promise<{ observation: Observation; png: Buffer }> {
-    return this.exclusive(session, signal, '观察手机', (video, serial, operationSignal) => this.capture(session, video, serial, operationSignal))
+  async observe(session: string, signal: AbortSignal, options: ObserveOptions = {}): Promise<{ observation: Observation; png: Buffer }> {
+    validateObserve(options)
+    return this.exclusive(session, signal, '观察手机', (video, serial, operationSignal) => this.capture(session, video, serial, operationSignal, false, options))
   }
-  private async capture(session: string, video: VideoSession, serial: string, operationSignal: AbortSignal,raw=false): Promise<{ observation: Observation; png: Buffer;xml?:string }> {
+  private async capture(session: string, video: VideoSession, serial: string, operationSignal: AbortSignal,raw=false,options: ObserveOptions = {}): Promise<{ observation: Observation; png: Buffer;xml?:string }> {
       const revision = this.state.revision, epoch = video.input.geometry.epoch
       let xml = '', treeError: string | null = null
-      try { xml = await this.backend.dumpUi(serial, operationSignal) }
+      try { if (options.mode !== 'screenshot') xml = await this.backend.dumpUi(serial, operationSignal) }
       catch (error) { operationSignal.throwIfAborted(); treeError = String((error as Error).message ?? error).slice(0, 400) }
       const png = await this.backend.screenshot(serial, operationSignal)
       const size = pngSize(png)
@@ -288,9 +290,65 @@ export class AndroidRuntime {
       if (xml) { try { tree = parseHierarchy(xml, size.width, size.height) } catch (error) { treeError = String((error as Error).message ?? error) } }
       operationSignal.throwIfAborted()
       if (revision !== this.state.revision || epoch !== video.input.geometry.epoch) throw new Error('观察期间画面发生旋转或人工操作，请重新观察')
-      const observation: Observation = { observation_id: randomBytes(16).toString('hex'), serial, captured_at: new Date().toISOString(), width: size.width, height: size.height, rotation: tree.rotation, elements: tree.elements, tree_truncated: tree.truncated, tree_error: treeError, revision, video_epoch: epoch }
+      const transformed = options.region || options.scale !== undefined ? transformScreen(png, options) : undefined
+      const observation: Observation = { observation_id: randomBytes(16).toString('hex'), serial, captured_at: new Date().toISOString(), width: size.width, height: size.height, rotation: options.mode === 'screenshot' ? null : tree.rotation, elements: tree.elements, tree_truncated: tree.truncated, tree_error: treeError, revision, video_epoch: epoch, capture_mode: options.mode ?? 'ui', ...(transformed ? { image_transform: transformed.image_transform } : {}) }
       this.observations.set(session, { observation, session, used: false })
-      return { observation, png,...(raw?{xml}:{}) }
+      return { observation, png: transformed?.png ?? png,...(raw?{xml}:{}) }
+  }
+  async waitImage(session: string, options: ImageWaitOptions, signal: AbortSignal) {
+    validateImageWait(options)
+    return this.exclusive(session, signal, '等待画面变化', async (video, serial, operationSignal) => {
+      const started = Date.now(), timeout = options.timeout_ms ?? 10000, interval = options.interval_ms ?? Math.min(500, timeout)
+      const ratio = options.change_ratio ?? 0.01, threshold = options.pixel_threshold ?? 16
+      // Keep the timeout controller alive through its timer. A temporary AbortSignal.timeout
+      // inside AbortSignal.any can be garbage-collected on supported Node versions during PNG allocation.
+      const timeoutController = new AbortController()
+      const timer = setTimeout(() => timeoutController.abort(new Error('图像等待超时')), timeout)
+      const deadline = AbortSignal.any([operationSignal, timeoutController.signal])
+      let current: { observation: Observation; png: Buffer } | undefined
+      let attempts = 0, difference: number | null = null, stableSince = 0, stableFor = 0, region = options.region
+      const result = (status: 'met' | 'timed_out' | 'geometry_changed') => ({ ...current!, status, condition: options.condition, attempts, elapsed_ms: Date.now() - started, changed_ratio: difference, stable_for_ms: stableFor, comparison_region: region!, change_ratio: ratio, pixel_threshold: threshold, comparison: options.condition === 'image_changed' ? 'first_frame' : 'stability_anchor', measurement_note: 'Only pixel differences are measured. Stable/changed does not mean loading, battle or task completion. Inspect the screenshot. The returned capture may predate the timeout.' })
+      try {
+        current = await this.capture(session, video, serial, deadline, false, { mode: 'screenshot' }); attempts++
+        region ??= { x: 0, y: 0, width: current.observation.width, height: current.observation.height }
+        validateRegion(region, current.observation)
+        let anchor = decodeScreen(current.png)
+        const epoch = current.observation.video_epoch
+        stableSince = Date.now()
+        while (true) {
+          await delay(interval, undefined, { signal: deadline })
+          current = await this.capture(session, video, serial, deadline, false, { mode: 'screenshot' }); attempts++
+          if (current.observation.video_epoch !== epoch || current.observation.width !== anchor.width || current.observation.height !== anchor.height) { difference = null; stableFor = 0; return result('geometry_changed') }
+          const next = decodeScreen(current.png)
+          difference = imageDifference(anchor, next, region, threshold)
+          deadline.throwIfAborted()
+          if (Date.now() - started >= timeout) return result('timed_out')
+          if (options.condition === 'image_changed') { if (difference > ratio) return result('met') }
+          else {
+            if (difference > ratio) { anchor = next; stableSince = Date.now() }
+            stableFor = Date.now() - stableSince
+            if (stableFor >= (options.stable_ms ?? Math.min(1000, timeout))) return result('met')
+          }
+        }
+      } catch (error) {
+        operationSignal.throwIfAborted()
+        if (deadline.aborted && current) return result('timed_out')
+        throw error
+      } finally { clearTimeout(timer) }
+    })
+  }
+  private async afterAction<T extends object>(session: string, video: VideoSession, serial: string, signal: AbortSignal, result: T, options: AfterActionOptions): Promise<T & { observation?: Observation; png?: Buffer; screenshot_error?: string }> {
+    if (!options.return_screenshot) return result
+    // Stay inside the same exclusive operation: manual input cancels the delay/capture, never the next unrelated action.
+    try {
+      const epoch = video.input.geometry.epoch
+      await delay(options.screenshot_delay_ms ?? 300, undefined, { signal })
+      if (video.input.geometry.epoch !== epoch) throw new Error('操作后画面发生旋转，请重新观察')
+      return { ...result, ...await this.capture(session, video, serial, signal, false, { mode: 'screenshot' }) }
+    } catch (error) {
+      signal.throwIfAborted()
+      return { ...result, screenshot_error: String((error as Error).message ?? error).slice(0, 400) }
+    }
   }
   async find(session: string, query: TargetQuery, maxAttempts: number, intervalMs: number, signal: AbortSignal) {
     validateTarget(query)
@@ -376,7 +434,8 @@ export class AndroidRuntime {
     const geometry = video.input.geometry
     return { ...geometry, x: Math.min(geometry.width - 1, Math.floor(x / observation.width * geometry.width)), y: Math.min(geometry.height - 1, Math.floor(y / observation.height * geometry.height)) }
   }
-  async tap(session: string, id: string, target: { elementId?: string; x?: number; y?: number; durationMs?: number }, signal: AbortSignal) {
+  async tap(session: string, id: string, target: { elementId?: string; x?: number; y?: number; durationMs?: number }, signal: AbortSignal, after: AfterActionOptions = {}) {
+    validateAfterAction(after)
     return this.exclusive(session, signal, '点击手机', async (video, _serial, operationSignal) => {
       const observation = this.observed(session, id, video)
       let x = target.x, y = target.y
@@ -390,10 +449,11 @@ export class AndroidRuntime {
       await delay(duration, undefined, { signal: operationSignal })
       await video.input.send({ kind: 'pointer', phase: 'up', ...point })
       operationSignal.throwIfAborted()
-      return { status: 'sent', serial: observation.serial, action: 'tap', verify_with: 'android_observe' }
+      return this.afterAction(session, video, observation.serial, operationSignal, { status: 'sent', serial: observation.serial, action: 'tap', verify_with: 'android_observe' }, after)
     })
   }
-  async swipe(session: string, id: string, points: { x1: number; y1: number; x2: number; y2: number; durationMs: number }, signal: AbortSignal) {
+  async swipe(session: string, id: string, points: { x1: number; y1: number; x2: number; y2: number; durationMs: number }, signal: AbortSignal, after: AfterActionOptions = {}) {
+    validateAfterAction(after)
     return this.exclusive(session, signal, '滑动手机', async (video, _serial, operationSignal) => {
       const observation = this.observed(session, id, video)
       const start = this.location(observation, video, points.x1, points.y1), end = this.location(observation, video, points.x2, points.y2)
@@ -403,13 +463,15 @@ export class AndroidRuntime {
       const steps = Math.ceil(points.durationMs / 30)
       for (let i = 1; i <= steps; i++) { await delay(points.durationMs / steps, undefined, { signal: operationSignal }); await video.input.send({ kind: 'pointer', phase: 'move', ...start, x: Math.round(start.x + (end.x - start.x) * i / steps), y: Math.round(start.y + (end.y - start.y) * i / steps) }) }
       await video.input.send({ kind: 'pointer', phase: 'up', ...end }); operationSignal.throwIfAborted()
-      return { status: 'sent', serial: observation.serial, action: 'swipe', verify_with: 'android_observe' }
+      return this.afterAction(session, video, observation.serial, operationSignal, { status: 'sent', serial: observation.serial, action: 'swipe', verify_with: 'android_observe' }, after)
     })
   }
-  async key(session: string, key: PhoneKey, signal: AbortSignal) {
-    return this.exclusive(session, signal, `手机按键：${key}`, async (video, serial, operationSignal) => { this.invalidate(); operationSignal.throwIfAborted(); await video.input.send({ kind: 'key', key }); operationSignal.throwIfAborted(); return { status: 'sent', serial, action: key, verify_with: 'android_observe' } })
+  async key(session: string, key: PhoneKey, signal: AbortSignal, after: AfterActionOptions = {}) {
+    validateAfterAction(after)
+    return this.exclusive(session, signal, `手机按键：${key}`, async (video, serial, operationSignal) => { this.invalidate(); operationSignal.throwIfAborted(); await video.input.send({ kind: 'key', key }); operationSignal.throwIfAborted(); return this.afterAction(session, video, serial, operationSignal, { status: 'sent', serial, action: key, verify_with: 'android_observe' }, after) })
   }
-  async inputText(session: string, id: string, text: string, signal: AbortSignal, replace = false) {
+  async inputText(session: string, id: string, text: string, signal: AbortSignal, replace = false, after: AfterActionOptions = {}) {
+    validateAfterAction(after)
     if (!text.length || text.length > 4096) throw new Error('文字长度须在 1–4096 之间')
     return this.exclusive(session, signal, '输入手机文字', async (video, serial, operationSignal) => {
       const observation = this.observed(session, id, video)
@@ -417,7 +479,7 @@ export class AndroidRuntime {
       this.invalidate(); operationSignal.throwIfAborted()
       if (replace) { await video.input.send({ kind: 'key', key: 'selectAll' }); operationSignal.throwIfAborted() }
       await video.input.send({ kind: 'text', text, method: 'paste' }); operationSignal.throwIfAborted()
-      return { status: 'sent', serial, action: 'input_text', replace, verify_with: 'android_observe' }
+      return this.afterAction(session, video, serial, operationSignal, { status: 'sent', serial, action: 'input_text', replace, verify_with: 'android_observe' }, after)
     })
   }
   async openApp(session: string, packageName: string, signal: AbortSignal) {

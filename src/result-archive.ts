@@ -2,7 +2,7 @@
 export function zipFiles(files: {name: string; data: Uint8Array}[]): Buffer {
   const locals: Buffer[] = [], central: Buffer[] = []; let offset=0
   for (const file of files) {
-    if (!/^(?:report\.(?:md|csv)|evidence\.json|evidence\/[1-9]\d*\.png)$/.test(file.name)) throw new Error('Invalid archive entry')
+    if (!/^(?:report\.(?:md|csv)|evidence\.json|evidence\/[1-9]\d*\.(?:png|webp))$/.test(file.name)) throw new Error('Invalid archive entry')
     const data=Buffer.from(file.data),name=Buffer.from(file.name,'utf8')
     let crc=0xffffffff
     for (const byte of data) { crc^=byte; for(let i=0;i<8;i++)crc=(crc>>>1)^((crc&1)?0xedb88320:0) }

@@ -16,7 +16,7 @@ import { TaskLedger } from './tasks.js'
 import { TemplateStore } from './templates.js'
 import { diagnoseError } from './diagnostics.js'
 import { ResultStore, ResultManagementError } from './results.js'
-import { resultMarkdown, resultCsv } from './result-format.js'
+import { resultMarkdown, resultCsv, evidenceExtension } from './result-format.js'
 import { zipFiles } from './result-archive.js'
 import { PanelStateStore } from './panel-state.js'
 import { TaskActionError } from './tasks.js'
@@ -125,6 +125,12 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
         downloadAuthorized=!!ticket&&ticket.id===route.slice('/download/'.length)&&ticket.expires>Date.now()
       }
       if (!authorized(req)&&!downloadAuthorized) { json(res, 403, { error: 'Invalid client request' }); return }
+      if(route==='/file-manager/preview'&&req.method==='GET'){
+        const q=new URL(req.url??'/','http://localhost').searchParams
+        const preview=await managerRead(req,res,30000,signal=>files.remote.preview(deviceSerial(q.get('serial')),q.get('path')??'',q.get('version')??'',signal))
+        res.writeHead(200,{'content-type':preview.mime,'content-length':preview.data.length,'cache-control':'no-store','x-content-type-options':'nosniff'})
+        res.end(preview.data);return
+      }
       if(route==='/file-manager/directory'&&req.method==='GET'){const q=new URL(req.url??'/','http://localhost').searchParams,options:DirectoryOptions={offset:Number(q.get('offset')??0),limit:Number(q.get('limit')??200),sort:(q.get('sort')??'name')as DirectoryOptions['sort'],descending:q.get('descending')==='1',hidden:q.get('hidden')==='1',filter:q.get('filter')??''};json(res,200,await managerRead(req,res,30000,signal=>fileManager.listDirectory(deviceSerial(q.get('serial')),q.get('path')??'/sdcard/Download',options,signal)));return}
       if(route==='/file-manager/stat'&&req.method==='GET'){const q=new URL(req.url??'/','http://localhost').searchParams;json(res,200,await managerRead(req,res,140000,signal=>files.remote.stat(deviceSerial(q.get('serial')),q.get('path')??'',q.get('hash')==='1',signal)));return}
       if(route==='/file-manager/places'&&req.method==='GET'){json(res,200,{places:fileManager.places,lastSerial:fileManager.lastSerial});return}
@@ -183,7 +189,7 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
         if (action==='source') {
           const index=Number(indexText),source=Number.isInteger(index)&&index>=1?result.sources[index-1]:undefined
           if (!source || !services.readImage) { json(res,404,{error:'截图依据不可用'}); return }
-          try { const image=await services.readImage(source.screenshot); res.writeHead(200,{'content-type':'image/png','cache-control':'private, no-store'}); res.end(image.data) }
+          try { const image=await services.readImage(source.screenshot); res.writeHead(200,{'content-type':source.screenshot.mediaType,'cache-control':'private, no-store'}); res.end(image.data) }
           catch { json(res,410,{error:'截图原件可能已被 Harness 清理，结果文字仍保留'}) }
           return
         }
@@ -200,7 +206,7 @@ export async function createPanel(config: PluginConfig = {}, nativeTools: () => 
                 if (!services.readImage) throw new Error('附件服务不可用')
                 const image=await services.readImage(source.screenshot);size+=image.data.length
                 if (size>48*1024*1024) throw new Error('依据包超过 48 MiB，请分批保存结果')
-                files.push({name:`evidence/${index+1}.png`,data:Buffer.from(image.data)})
+                files.push({name:`evidence/${index+1}.${evidenceExtension(source.screenshot.mediaType)}`,data:Buffer.from(image.data)})
               }
             } catch (error) { json(res,409,{error:`无法导出完整依据包：${String((error as Error).message??error)}`,recovery:'可继续导出 Markdown / CSV；截图可能已被 Harness 清理'}); return }
             content=zipFiles(files);media='application/zip';extension='zip'

@@ -20,6 +20,24 @@ const signal=()=>new AbortController().signal
 async function directory(){await mkdir('.build/tests',{recursive:true});return mkdtemp(join(process.cwd(),'.build/tests/results-'))}
 const resolve=id=>id===source.observation_id?source:null
 
+test('WebP screenshot evidence survives reload and keeps its format in Markdown and ZIP exports',async()=>{
+ const root=await directory(),store=new ResultStore(root)
+ await store.load()
+ const webp={...source,screenshot:{...ref,mediaType:'image/webp'}}
+ const saved=await store.save('webp','c','t',input(),()=>webp,signal())
+ const restored=new ResultStore(root);await restored.load()
+ assert.equal(restored.warning,null);assert.equal(restored.get(saved.id).sources[0].screenshot.mediaType,'image/webp')
+ assert.match(resultMarkdown(restored.get(saved.id)),/evidence\/1\.webp/)
+ const bytes=Buffer.from('RIFF0000WEBP'),panel=await createPanel({dataDir:root},()=>[],{readImage:async()=>({data:bytes})}),server=createServer(panel.handler)
+ await new Promise(r=>server.listen(0,'127.0.0.1',r))
+ try{
+  const base=`http://127.0.0.1:${server.address().port}/x-android/results/${saved.id}`,headers={'x-android-client':'1'}
+  const image=await fetch(base+'/source/1',{headers});assert.equal(image.status,200);assert.equal(image.headers.get('content-type'),'image/webp');assert.deepEqual(Buffer.from(await image.arrayBuffer()),bytes)
+  const response=await fetch(base+'/export?format=bundle',{headers});assert.equal(response.status,200)
+  const zip=Buffer.from(await response.arrayBuffer());assert(zip.includes(Buffer.from('evidence/1.webp')));assert(zip.includes(bytes))
+ }finally{await panel.close();await new Promise(r=>server.close(r))}
+})
+
 test('missing cells and insufficient rows downgrade a complete result and retain reasons',()=>{
  const value=validateResult(input({expected_count:20,rows:[{cells:['实际标题',null],observation_ids:[source.observation_id]}]}))
  assert.equal(value.status,'partial');assert.match(value.reason,/未读到/);assert.match(value.reason,/少于预期 20/);assert.equal(value.rows[0].cells[1],null)

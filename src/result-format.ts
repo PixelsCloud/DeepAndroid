@@ -48,6 +48,11 @@ const statuses = {complete:'已整理',partial:'部分完成',failed:'未完成'
 const taskStatuses:Record<string,string>={running:'执行中',completed:'已结束',cancelled:'已取消',interrupted:'已中断',limited:'达到限额',unknown:'结果待确认'}
 const markdown = (text: string) => text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\\/g,'\\\\').replace(/([`*_\[\]#!])/g,'\\$1').replace(/\|/g,'\\|').replace(/\r?\n/g,'<br>')
 export function sourceNumbers(result: SavedResult, ids: string[]) { return ids.map(id => result.sources.findIndex(source => source.observation_id === id)+1).filter(Boolean) }
+export function evidenceExtension(mediaType:string):'png'|'webp' {
+  if(mediaType==='image/png')return 'png'
+  if(mediaType==='image/webp')return 'webp'
+  throw new Error('不支持的截图格式')
+}
 export function resultMarkdown(result: ResultView): string {
   const lines = [`# ${markdown(result.title)}`,'',`状态：${statuses[result.status]} · ${result.origin === 'agent' ? 'Agent 整理，内容需结合截图核对' : '设备原始采集，尚未由 Agent 整理'}`,`保存时间：${result.created_at}`,'']
   if (result.reason) lines.push(`说明：${markdown(result.reason)}`,'')
@@ -60,7 +65,7 @@ export function resultMarkdown(result: ResultView): string {
   }
   if (result.sources.length) {
     lines.push('## 截图依据','','配套截图请使用“导出依据包”；单独的 Markdown 文件不包含截图原件。','')
-    result.sources.forEach((source,index)=>lines.push(`### 截图 ${index+1}`,'',`观察：${source.observation_id} · ${source.captured_at}`,'',`![截图 ${index+1}](evidence/${index+1}.png)` ,''))
+    result.sources.forEach((source,index)=>lines.push(`### 截图 ${index+1}`,'',`观察：${source.observation_id} · ${source.captured_at}`,'',`![截图 ${index+1}](evidence/${index+1}.${evidenceExtension(source.screenshot.mediaType)})` ,''))
   }
   return lines.join('\n')+'\n'
 }

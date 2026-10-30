@@ -32,7 +32,7 @@ try {
  }
  await page.getByRole('tab',{name:'任务',exact:true}).click();assert.equal(await page.locator('.android-task').isVisible(),true);assert.equal(await page.locator('.android-video').isVisible(),false);await page.screenshot({path:'.build/evidence/layout-tasks.png'});await page.getByRole('tab',{name:'手机',exact:true}).click();assert.equal(await page.locator('.android-task').isVisible(),false)
  await page.getByRole('button',{name:'主页',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.android-input-status')?.style.color!=='rgb(230, 143, 143)');assert(inputs.some(c=>c.kind==='key'&&c.key==='home'))
- await page.getByRole('tab',{name:'调试',exact:true}).click();await page.getByText(/已发现.*台已授权手机/).waitFor();assert.equal(await page.locator('.android-meta').isVisible(),true);assert.equal(await page.locator('.android-video').isVisible(),false)
+ await page.getByRole('tab',{name:'调试',exact:true}).click();await page.getByText(/已发现.*台已授权手机/).waitFor();assert.equal(await page.locator('.android-meta').isVisible(),false);await page.locator('.video-detail-fold summary').click();assert.equal(await page.locator('.android-meta').isVisible(),true);assert.equal(await page.locator('.android-video').isVisible(),false)
  await page.screenshot({path:'.build/evidence/layout-debug.png'})
  await page.getByRole('button',{name:'常用任务',exact:true}).click();await page.locator('[data-template] option').first().waitFor({state:'attached'})
  await page.getByRole('tab',{name:'手机',exact:true}).click();await page.waitForFunction(()=>Number(document.querySelector('#root')?.dataset.framesRendered)>5)

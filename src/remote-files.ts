@@ -5,6 +5,7 @@ import type {Adb} from '@yume-chan/adb'
 import type {DeviceService} from './device.js'
 import {remotePath,mutationPath} from './remote-path.js'
 import {quoteAndroidArg as quote} from './android-shell.js'
+import {MAX_PREVIEW_BYTES,imageMime} from './image-preview.js'
 
 const MAX_BYTES=2*1024**3,MAX_ENTRIES=1000
 export interface RemoteStat{status:'found'|'not_found';exists:boolean;serial:string;path:string;type?:'file'|'directory'|'symlink'|'special';bytes?:number|string;mtime_seconds?:string;modified_at?:string|null;fingerprint?:string;mode?:string;sha256?:string}
@@ -33,6 +34,35 @@ export class RemoteFiles{
       const result:RemoteStat={status:'found',exists:true,serial,path,type,bytes:safeNumber(info.size),mtime_seconds:String(info.mtime),modified_at:timestamp(info.mtime),fingerprint:[info.size,info.mtime,info.ctime??'',('ino'in info?info.ino:'')??''].join(':'),mode:(info.mode&0o7777).toString(8)}
       if(includeHash){if(type!=='file'||info.size>BigInt(MAX_BYTES))throw new Error('哈希仅支持不超过 2 GiB 的普通文件');result.sha256=await this.hash(serial,path,signal);const after=await adb.sync.lstat(path);if(after.size!==info.size||after.mtime!==info.mtime||after.ctime!==info.ctime)throw new Error('文件在计算哈希期间变化，请等待稳定后重新查询')}
       signal.throwIfAborted();return result
+    })
+  }
+  async preview(serial:string,value:string,version:string,signal:AbortSignal){
+    const path=remotePath(value)
+    return this.connected(serial,signal,async adb=>{
+      const before=await adb.sync.lstat(path)
+      if((before.mode&0xf000)!==0x8000)throw new Error('仅支持预览普通图片文件')
+      if(before.size>BigInt(MAX_PREVIEW_BYTES))throw new Error('图片超过 20 MiB，请下载后查看')
+      if(version&&version!==`file:${before.size}:${before.mtime}`)throw new Error('图片已变化，请刷新目录后重试')
+      const reader=adb.sync.read(path).getReader(),chunks:Buffer[]=[]
+      let size=0,complete=false
+      try{
+        while(true){
+          signal.throwIfAborted()
+          const chunk=await reader.read()
+          if(chunk.done){complete=true;break}
+          size+=chunk.value.byteLength
+          if(size>MAX_PREVIEW_BYTES)throw new Error('图片超过 20 MiB，请下载后查看')
+          chunks.push(Buffer.from(chunk.value))
+        }
+      }finally{
+        if(!complete)await reader.cancel().catch(()=>{})
+        reader.releaseLock()
+      }
+      signal.throwIfAborted()
+      const after=await adb.sync.lstat(path)
+      if(before.size!==after.size||before.mtime!==after.mtime||before.ctime!==after.ctime||BigInt(size)!==before.size)throw new Error('图片在读取时变化，请刷新目录后重试')
+      const data=Buffer.concat(chunks,size)
+      return{data,mime:imageMime(data)}
     })
   }
   async hash(serial:string,path:string,signal:AbortSignal){const text=await this.shell(serial,['sha256sum','--',remotePath(path)],signal,120000),hash=text.match(/^([a-f0-9]{64})\b/i)?.[1];if(!hash)throw new Error('手机未返回有效的 SHA-256');return hash.toLowerCase()}

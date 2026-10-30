@@ -14,12 +14,23 @@ const directory = await mkdtemp(join(process.cwd(), '.build/tests/file-manager-b
 await build({ stdin: { contents: 'export {mountFileManager} from "./src/browser-file-manager.ts"; export {mountToasts} from "./src/browser-toast.ts"', resolveDir: process.cwd() }, outfile: join(directory, 'files.js'), bundle: true, platform: 'browser', format: 'esm', target: 'chrome130' })
 const requests = [], jobs = [], checks = [], errors = [], uploads = []
 let releaseRead, blocked, failDirectory = false, extra = false, unsafe = false
+let previewEntries = false, previewFailure = false, previewPending = false, previewAborted = false, previewCount = 0
+let previewPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64')
 const entry = (path, type = 'file') => ({ name: path.split('/').at(-1), path, type, bytes: 10, mtime_seconds: '1', modified_at: '2026-10-26T00:00:00Z', version: type + ':10:1' })
 const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)) }
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost')
   const read = async () => { const chunks = []; for await (const chunk of req) chunks.push(chunk); return Buffer.concat(chunks) }
   if (url.pathname === '/files.js') { res.setHeader('content-type', 'text/javascript'); res.end(await readFile(join(directory, 'files.js'))); return }
+  if (url.pathname === '/x-android/file-manager/preview') {
+    previewCount++
+    assert.equal(req.headers['x-android-client'], '1')
+    assert.equal(url.searchParams.get('serial'), 'b')
+    assert.equal(url.searchParams.get('path'), '/sdcard/Download/风景.png')
+    if (previewPending) {res.once('close', () => {previewAborted = true}); return}
+    if (previewFailure) return json(res, {error: '图片读取失败（设备已断开）'}, 500)
+    res.writeHead(200, {'content-type': 'image/png'}); res.end(previewPng); return
+  }
   if (url.pathname === '/x-android/devices') return json(res, { devices: ['a', 'b'].map(serial => ({ serial, model: 'Phone ' + serial, state: 'device' })) })
   if (url.pathname === '/x-android/file-manager/places') { if (req.method === 'POST') await read(); return json(res, { places: {}, lastSerial: null }) }
   if (url.pathname === '/x-android/file-manager/directory') {
@@ -28,6 +39,7 @@ const server = createServer(async (req, res) => {
     if (blocked?.serial === serial && blocked.path === path) { const own = blocked; blocked = null; own.started(); await new Promise(resolve => { releaseRead = resolve }) }
     if (failDirectory) return json(res, { error: '设备连接已断开（测试注入）' }, 500)
     const entries = path === '/sdcard/Download' ? [entry(path + '/' + serial + '.txt'), entry(path + '/demo.apk'), entry(path + '/folder', 'directory'), ...(extra ? [entry(path + '/new.txt')] : []), ...(unsafe ? [entry(path + '/<img src=x onerror=window.__fmInjected=true>.txt')] : [])] : []
+    if (previewEntries) entries.push(entry(path + '/风景.png'), {...entry(path + '/大图.jpg'), bytes: 21 * 1024 * 1024})
     return json(res, directoryPage(serial, path, entries, false, {}))
   }
   if (url.pathname === '/x-android/file-manager/jobs' && req.method === 'GET') return json(res, { jobs, transfers: [], recordings: [] })
@@ -109,6 +121,68 @@ try {
   assert.equal(jobs.find(job => job.operation === 'install').path, '/sdcard/Download/demo.apk')
   await page.getByText(/INSTALL_FAILED_USER_RESTRICTED/).waitFor()
   checks.push('APK installation requires explicit confirmation, binds the selected phone path and displays the actual service refusal')
+
+  while (await page.locator('.android-toast').count()) await page.locator('.android-toast button').first().click()
+
+  previewEntries = true
+  previewPng = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 800
+    const ctx = canvas.getContext('2d'), sky = ctx.createLinearGradient(0, 0, 0, 800)
+    sky.addColorStop(0, '#7dc7e5'); sky.addColorStop(1, '#e5f4ec'); ctx.fillStyle = sky; ctx.fillRect(0, 0, 1200, 800)
+    ctx.fillStyle = '#fff1b0'; ctx.beginPath(); ctx.arc(920, 190, 75, 0, Math.PI * 2); ctx.fill()
+    for (const [color, y] of [['#537e80', 360], ['#295e5d', 500], ['#153d41', 650]]) {ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(0,800); ctx.lineTo(0,y); for(let x=0;x<=1200;x+=60)ctx.lineTo(x,y+Math.sin(x/140)*80);ctx.lineTo(1200,800);ctx.fill()}
+    const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL)
+    window.previewUrls = new Set()
+    URL.createObjectURL = blob => {const url = create(blob); window.previewUrls.add(url); return url}
+    URL.revokeObjectURL = url => {window.previewUrls.delete(url); revoke(url)}
+    return canvas.toDataURL('image/png').split(',')[1]
+  }), 'base64')
+  await page.getByRole('button', {name: '刷新目录'}).click(); await loaded('b')
+  await page.getByRole('checkbox', {name: '选择 风景.png', exact: true}).check()
+  assert.equal(previewCount, 0)
+  await page.getByRole('button', {name: '风景.png', exact: true}).click()
+  const preview = page.getByRole('dialog', {name: '图片预览'})
+  await preview.getByText(/1200 × 800/).waitFor()
+  assert.equal(await preview.locator('img').evaluate(img => img.complete && img.naturalWidth === 1200), true)
+  assert.equal(await page.getByRole('checkbox', {name: '选择 风景.png', exact: true}).isChecked(), true)
+  await page.screenshot({path: '.build/evidence/image-preview-840.png'})
+  await preview.getByRole('button', {name: '原始尺寸', exact: true}).click()
+  assert(await preview.locator('.preview-stage').evaluate(node => node.scrollWidth > node.clientWidth))
+  await preview.getByRole('button', {name: '适应窗口', exact: true}).click()
+  await page.setViewportSize({width: 360, height: 780})
+  await page.screenshot({path: '.build/evidence/image-preview-360.png'})
+  assert(await preview.evaluate(node => node.getBoundingClientRect().width <= innerWidth))
+  assert(await preview.getByRole('button', {name: '关闭', exact: true}).evaluate(node => node.getBoundingClientRect().bottom <= node.closest('dialog').getBoundingClientRect().bottom))
+  await page.keyboard.press('Escape'); await preview.waitFor({state: 'detached'})
+  assert.equal(await page.evaluate(() => window.previewUrls.size), 0)
+  await page.setViewportSize({width: 840, height: 960})
+  checks.push('Image filename opens decoded preview; checkbox selection remains; fit/actual size, mobile layout, Escape and blob cleanup work')
+
+  previewFailure = true
+  await page.getByRole('button', {name: '风景.png', exact: true}).focus(); await page.keyboard.press('Enter')
+  await page.getByText('图片读取失败（设备已断开）', {exact: true}).waitFor()
+  await delay(5200)
+  assert(await page.getByText('图片读取失败（设备已断开）', {exact: true}).isVisible())
+  previewFailure = false
+  await preview.getByRole('button', {name: '重试', exact: true}).click()
+  await preview.getByText(/1200 × 800/).waitFor()
+  await preview.getByRole('button', {name: '关闭', exact: true}).click(); await preview.waitFor({state: 'detached'})
+  await page.getByRole('button', {name: '大图.jpg', exact: true}).click()
+  await page.getByText('图片超过 20 MiB，请下载后查看', {exact: true}).waitFor()
+  await preview.getByRole('button', {name: '关闭', exact: true}).click(); await preview.waitFor({state: 'detached'})
+  checks.push('Keyboard preview, persistent error toast, successful retry and large-image refusal work')
+
+  previewPending = true
+  const previousCount = previewCount
+  await page.getByRole('button', {name: '风景.png', exact: true}).click()
+  await until(() => previewCount > previousCount)
+  await preview.getByRole('button', {name: '关闭', exact: true}).click(); await preview.waitFor({state: 'detached'})
+  await until(() => previewAborted)
+  assert.equal(await page.evaluate(() => window.previewUrls.size), 0)
+  previewPending = false
+  checks.push('Closing an unfinished preview aborts the HTTP request and leaves no object URLs')
+
+  while (await page.locator('.android-toast').count()) await page.locator('.android-toast button').first().click()
 
   failDirectory = true
   await page.getByRole('button', { name: '刷新目录' }).click()

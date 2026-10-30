@@ -31,6 +31,23 @@ export function mountToasts(root: HTMLElement) {
   let disposed = false
   const seen = new Map<string, string>()
   const entries = new Map<string, { node: HTMLElement; close: () => void }>()
+  const position=()=>{
+    if(disposed)return
+    const panel=root.querySelector<HTMLElement>('.android-panel'),dialog=[...root.querySelectorAll<HTMLDialogElement>('dialog[open]')].at(-1)
+    const anchor=dialog??panel
+    if(!anchor)return
+    region.style.maxHeight='min(160px, 25dvh)'
+    const bounds=anchor.getBoundingClientRect(),width=Math.max(160,Math.min(380,bounds.width-40))
+    region.style.width=width+'px'
+    // Float below the panel navigation without inserting any layout placeholder.
+    const tabs=panel?.querySelector('.android-panel-tabs')?.getBoundingClientRect()
+    region.style.top=Math.max(12,dialog?bounds.top+64:(tabs?.bottom??bounds.top)+12)+'px'
+    region.style.right=Math.max(12,innerWidth-bounds.right+20)+'px'
+  }
+  const resize=new ResizeObserver(position)
+  resize.observe(root);resize.observe(region)
+  window.addEventListener('resize',position)
+  window.addEventListener('scroll',position,true)
   const syncLayer = () => {
     if (disposed) return
     // A toast outside a modal is inert. Keep it inside the current dialog and
@@ -40,6 +57,7 @@ export function mountToasts(root: HTMLElement) {
     if (region.parentElement !== parent) { if (region.matches(':popover-open')) region.hidePopover(); parent.append(region) }
     if (entries.size && !region.matches(':popover-open')) region.showPopover()
     else if (!entries.size && region.matches(':popover-open')) region.hidePopover()
+    position()
   }
   const observer = new MutationObserver(records => {
     if (records.some(record => record.target instanceof HTMLDialogElement || [...record.addedNodes, ...record.removedNodes].some(node => node instanceof HTMLDialogElement))) syncLayer()
@@ -86,5 +104,5 @@ export function mountToasts(root: HTMLElement) {
     entries.set(identity, { node, close: remove }); region.append(node); syncLayer(); resume()
   }
   root.addEventListener(eventName, receive)
-  return { dispose() { disposed = true; observer.disconnect(); root.removeEventListener(eventName, receive); for (const entry of [...entries.values()]) entry.close(); seen.clear(); region.remove(); style.remove() } }
+  return { dispose() { disposed = true; observer.disconnect();resize.disconnect();window.removeEventListener('resize',position);window.removeEventListener('scroll',position,true); root.removeEventListener(eventName, receive); for (const entry of [...entries.values()]) entry.close(); seen.clear(); region.remove(); style.remove() } }
 }

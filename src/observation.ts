@@ -2,8 +2,10 @@ import { XMLParser } from 'fast-xml-parser'
 
 export interface ScreenElement { element_id: string; text: string; description: string; resource_id: string; package_name: string; class_name: string; clickable: boolean; editable: boolean; focused: boolean; bounds: [number, number, number, number]; scrollable?: boolean; node_path?: string; row_path?: string; scroll_bounds?: [number, number, number, number]; text_truncated?:boolean;description_truncated?:boolean;text_clipped?:boolean }
 export interface Observation {
-  observation_id: string; serial: string; captured_at: string; width: number; height: number; rotation: number;
+  observation_id: string; serial: string; captured_at: string; width: number; height: number; rotation: number | null;
   elements: ScreenElement[]; tree_truncated: boolean; tree_error: string | null; revision: number; video_epoch: number
+  capture_mode?: 'ui' | 'screenshot'
+  image_transform?: { region: { x: number; y: number; width: number; height: number }; scale: number; width: number; height: number; original_width: number; original_height: number; mapping: string }
 }
 export function pngSize(data: Uint8Array): { width: number; height: number } {
   if (data.byteLength < 24 || ![137,80,78,71,13,10,26,10].every((b, i) => data[i] === b)) throw new Error('手机截图不是有效 PNG')

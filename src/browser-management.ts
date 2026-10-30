@@ -38,11 +38,12 @@ export function mountManagement(root: HTMLElement): () => void {
     if (disposed) return
     const area = get<HTMLElement>('[data-doctor-report]'); area.replaceChildren()
     text(area, value.diagnostic.message, 'p'); text(area, value.diagnostic.recovery, 'p')
-    text(area, `插件 ${value.pluginVersion} · 画面：${value.runtime.state === 'streaming' ? '已连接' : '未连接'} · 可直接操作`)
-    if (value.adb) { text(area, value.adb.version); text(area, `ADB：${value.adb.path}`) }
-    if (value.lastObservedModel) text(area, `上次任务模型：${value.lastObservedModel.model} · ${value.lastObservedModel.image_input ? '声明支持图片' : '使用界面元素；识图需选择图片模型'}`)
-    else text(area, '模型兼容性在对话首次调用手机工具后确认。')
-    if (value.storage.directory) text(area, `本机记录目录：${value.storage.directory}`)
+    const technical=document.createElement('details');text(technical,'技术信息','summary');area.append(technical)
+    text(technical, `插件 ${value.pluginVersion} · 画面：${value.runtime.state === 'streaming' ? '已连接' : '未连接'} · 可直接操作`)
+    if (value.adb) { text(technical, value.adb.version); text(technical, `ADB：${value.adb.path}`) }
+    if (value.lastObservedModel) text(technical, `上次任务模型：${value.lastObservedModel.model} · ${value.lastObservedModel.image_input ? '声明支持图片' : '使用界面元素；识图需选择图片模型'}`)
+    else text(technical, '模型兼容性在对话首次调用手机工具后确认。')
+    if (value.storage.directory) text(technical, `本机记录目录：${value.storage.directory}`)
     if (value.storage.warning) text(area, value.storage.warning, 'p', 'problem')
   }
   const statuses: Record<string, string> = { running: '执行中', completed: '已结束', cancelled: '已取消', interrupted: '已中断', limited: '达到限额', unknown: '结果待确认' }
